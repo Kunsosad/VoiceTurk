@@ -70,15 +70,47 @@ Local storage remains the zero-configuration default. To use MinIO:
 ```env
 OBJECT_STORAGE_PROVIDER=minio
 S3_ENDPOINT_URL=http://localhost:9000
-S3_BUCKET_NAME=voiceturk
-S3_ACCESS_KEY_ID=voiceturk
-S3_SECRET_ACCESS_KEY=voiceturk-secret
+S3_PUBLIC_BASE_URL=http://localhost:9000
+S3_BUCKET_NAME=voiceturk-dev
+S3_ACCESS_KEY_ID=minioadmin
+S3_SECRET_ACCESS_KEY=minioadmin
 S3_REGION=us-east-1
-S3_PUBLIC_BASE_URL=
 S3_SECURE=false
+S3_PRESIGNED_EXPIRE_SECONDS=900
 ```
 
-Start the optional local service with `docker compose up -d minio`. The adapter checks/creates the bucket and returns presigned PUT/GET URLs. Configure MinIO bucket CORS to allow PUT from `http://localhost:5173`. Local uploads use the same init/complete application flow via a backend PUT endpoint.
+Start the optional local service with `docker compose up -d minio`. In development the adapter creates a missing bucket; staging/production fail clearly instead. `S3_ENDPOINT_URL` is used by the backend while `S3_PUBLIC_BASE_URL` signs browser-reachable URLs. They may differ when the backend uses `http://minio:9000` but the browser must use `http://localhost:9000`.
+
+Configure local CORS after installing MinIO Client (`mc`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\configure_minio_cors.ps1
+```
+
+This permits the localhost/127.0.0.1 frontend origins on ports 3000 and 5173, upload/read methods and preflight, all request headers, and exposes ETag/content headers. Local uploads use the same init/complete application flow via a backend PUT endpoint.
+
+## Recording stuck after pre-check
+
+Open the browser Network tab and the Studio debug timeline. A successful attempt shows:
+
+```text
+POST /audio/uploads/init
+PUT {presigned MinIO/S3 URL}
+POST /audio/uploads/complete
+GET /recording-sessions/{id}/next-action
+```
+
+The frontend enforces 10-second upload-init/next-action deadlines, a 30-second PUT deadline, and a 20-second upload-complete deadline. Backend FastCheck has a 15-second deadline. A timeout moves the UI to `PIPELINE_ERROR` or returns `FAST_CHECK_TIMEOUT`; Retry keeps the same item.
+
+Common causes:
+
+1. Browser-unreachable signed host: `http://minio:9000` works inside Docker but not in the browser. Set `S3_PUBLIC_BASE_URL=http://localhost:9000`; URLs are signed with that host and are never rewritten afterward.
+2. MinIO CORS: run the CORS script and confirm the frontend origin is listed. S3-compatible servers handle OPTIONS preflight from the configured PUT/GET/POST/HEAD rules.
+3. Content-Type mismatch: upload init signs the actual Blob type and browser PUT sends that exact type.
+4. Missing bucket: development auto-creates `S3_BUCKET_NAME`; staging/production intentionally fail.
+5. Upload complete absent: inspect `UPLOAD_INIT_*` and `PRESIGNED_PUT_*` timeline events to locate the terminal step.
+6. FastCheck timeout: inspect backend `voiceturk.pipeline` JSON logs for `FAST_CHECK_TIMEOUT`.
+7. DeepCheck blocking: this is a bug—completion returns `CONTINUE_NEXT` immediately after enqueue; DeepCheck runs separately.
 
 ## Seed and checks
 

@@ -121,3 +121,21 @@
 - Agora and MinIO require external credentials/services and default tests do not contact them.
 - Agora currently uses Browser TTS for coach speech; Conversational AI Agent lifecycle is not implemented.
 - PCM WAV is the supported decoded format; the bundled Agora SDK increases the initial frontend chunk size.
+
+## Post-Precheck Pipeline Hardening
+
+- Root cause audit found four unbounded/failure-prone seams: frontend fetches had no AbortController deadlines, MinIO signed only with the backend endpoint, bucket creation ignored environment, and FastCheck had no request deadline.
+- Added explicit `UPLOAD_INIT`, `PRESIGNED_PUT`, `UPLOAD_COMPLETE`, `WAITING_FASTCHECK`, and `PIPELINE_ERROR` states with 10s/30s/20s request limits and retry on the same item.
+- Added a visible 30-event debug timeline and required client events from pre-check through auto-advance.
+- Added browser-reachable MinIO signing through `S3_PUBLIC_BASE_URL`; internal Docker hostnames now require that setting instead of returning an unusable URL.
+- Development may create `voiceturk-dev`; staging/production fail when the bucket is absent.
+- Added MinIO CORS setup script for localhost/127.0.0.1 origins on ports 3000/5173.
+- Added a 15-second backend FastCheck deadline and terminal `FAST_CHECK_TIMEOUT`; missing temporary objects return `UPLOAD_OBJECT_NOT_FOUND`.
+- Added structured JSON pipeline logs for upload init/completion, object checks, FastCheck, promotion, AudioSample creation, enqueue, and response.
+- Expanded backend coverage to browser URL signing, missing objects, FastCheck timeout, environment-specific bucket behavior, and log events.
+
+### Verification
+
+- Backend: 7 passed, 1 MinIO live integration skipped without environment.
+- Frontend typecheck passed after timeout/instrumentation changes.
+- Frontend production build and complete smoke script passed; only the known Agora bundle-size warning remains.

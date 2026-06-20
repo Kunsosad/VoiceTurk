@@ -256,3 +256,7 @@ Response:
 `POST /realtime/agora/token` issues an RTC publisher/subscriber token through the realtime adapter when Agora is configured. It never changes recording or sample state.
 
 FastCheck responses include `action`, `reason_code`, `severity`, `retry_same_item`, `message_vi`, `metrics`, `warnings`, and nullable `sample_id`.
+
+Upload completion returns `UPLOAD_OBJECT_NOT_FOUND` when the initialized temporary object is absent and `FAST_CHECK_TIMEOUT` when deterministic checking exceeds its configured deadline. Both are terminal `RETAKE_NOW` responses and create no AudioSample.
+
+Frontend deadlines are 10 seconds for upload init and next-action, 30 seconds for presigned PUT, and 20 seconds for upload complete. Timeout/error leaves the same item assigned and exposes a Retry action.
