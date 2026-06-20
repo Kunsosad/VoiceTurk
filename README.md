@@ -1,109 +1,90 @@
-﻿# VoiceTurk MVP
+# VoiceTurk MVP
 
-VoiceTurk is a guided Vietnamese prosody recording and dataset packaging MVP.
-
-## MVP Flow
-
-Buyer creates campaign  
--> Backend generates recording items  
--> Contributor records audio with AI Voice Coach support  
--> Backend runs FastCheck and DeepCheck  
--> Validator reviews samples  
--> Dataset Builder exports dataset package  
--> Manifest/proof verify returns MATCH  
+VoiceTurk is a local-first MVP for guided Vietnamese prosody recording and dataset packaging. It proves the full flow from buyer campaign creation through contributor recording, validator review, dataset export, and manifest verification.
 
 ## Architecture
 
-VoiceTurk uses:
+- FastAPI modular monolith with domain, application, ports, adapters, and composition layers.
+- React/Vite Web2 frontend with Buyer, Contributor, and Validator role switching.
+- In-memory repository, local audio/export storage, deterministic FastCheck, mock DeepCheck, Browser TTS, and local-hash proof.
+- Exactly seven core entities. External provider SDKs are absent from domain and application code.
 
-- Monorepo
-- Modular monolith backend
-- Ports/adapters architecture
-- Web2 demo frontend
-- Mock/local providers first
+## Prerequisites
 
-Backend is the source of truth.
+- Python 3.11+
+- Node.js 20+
+- pnpm (npm may also be used)
 
-Agora is only a realtime voice/AI Coach layer.
+## Run the backend
 
-Dataset audio must go:
+```powershell
+cd services/api
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e ".[test]"
+uvicorn app.main:app --reload --port 8000
+```
 
-Client -> Backend/Object Storage -> AudioSample
+Runtime data is written to `services/api/storage/` and `services/api/exports/` by default.
 
-## Setup Agent Context
+## Run the frontend
 
-Run from repo root:
+In another terminal:
 
-```bash
-mkdir -p .agent-skills
-git clone https://github.com/openai/skills .agent-skills/openai-skills || true
-git clone https://github.com/AgoraIO/skills .agent-skills/agora-skills || true
-git clone https://github.com/agentsmd/agents.md .agent-skills/agents-md || true
+```powershell
+cd apps/web
+pnpm install
+pnpm dev
+```
 
-On Windows PowerShell, use:
+Open `http://localhost:5173`. Copy `.env.example` to `.env` only when changing defaults.
 
-mkdir .agent-skills -Force
-git clone https://github.com/openai/skills .agent-skills/openai-skills
-git clone https://github.com/AgoraIO/skills .agent-skills/agora-skills
-git clone https://github.com/agentsmd/agents.md .agent-skills/agents-md
-Environment
+## Seed demo data
 
-Copy:
+With the backend running:
 
-cp .env.example .env
+```powershell
+python scripts/seed_demo.py
+```
 
-MVP defaults should run without:
+This creates three demo users and an active `ecommerce_cskh` campaign with five script lines × four emotions = 20 recording items. The endpoint is idempotent for the current API process. You can also click **Seed active demo** in the Buyer UI.
 
-Agora
-Solana
-S3
-ASR
-LLM
-Redis
+## Run checks and smoke test
 
-Use mock/local providers first.
+```powershell
+cd services/api
+python -m pytest -q -p no:cacheprovider
 
-Critical Rules
+cd ../../apps/web
+pnpm run typecheck
+pnpm run build
+```
 
-Read AGENTS.md before coding.
+The backend test executes the complete API flow, including FastCheck retake/pass branches, mock DeepCheck, validation, coverage, dataset file creation, and manifest verification.
 
-Do not bypass ports/adapters.
+Or run both suites from the repository root:
 
-Do not import Agora/Solana/S3/LLM/ASR SDKs into domain or application layers.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke_test.ps1
+```
 
-Do not create extra MVP entities unless explicitly requested.
+## Demo flow
 
-Expected Demo Screens
+1. Buyer seeds or creates a campaign, generates items, and activates it.
+2. Contributor starts a session, follows the coach, records in the browser, and uploads audio.
+3. Validator refreshes the queue, plays the audio, and accepts/rejects/requests a retake.
+4. Buyer checks coverage, builds a dataset from accepted samples, and verifies its manifest hash.
 
-Buyer:
+## Mocked and placeholder integrations
 
-Campaign list
-Create campaign
-Campaign detail / coverage
-Dataset export / verify
+- DeepCheck produces deterministic mock acoustic metadata in a background task.
+- Browser speech synthesis is the default coach; text remains visible when TTS is unavailable.
+- The Agora adapter is a stable placeholder with no SDK dependency.
+- Local-hash proof is functional. Solana, S3/MinIO, ASR, LLM, Redis, and real auth are intentionally not implemented.
 
-Contributor:
+## MVP limitations
 
-Home / available campaigns
-Recording session
-Session summary
-
-Validator:
-
-Review queue
-Sample review detail
-Expected Dataset Package
-dataset_v1/
-  audio/
-  annotations.jsonl
-  quality_report.json
-  data_card.md
-  manifest.json
-  license.json
-Agent Workflow
-Read AGENTS.md.
-Read docs/.
-Read .codex/skills/.
-Build phase by phase.
-Keep MVP running end-to-end.
-Prefer mock adapter over blocking on real external integration.
+- Persistence is process-local; restarting the API clears business state, though stored audio/exports remain on disk.
+- FastCheck validates duration, file size, MIME type, and presence but does not decode audio frames.
+- Dataset builds are synchronous and version uniqueness is not enforced.
+- Agora is not connected; the MVP always chooses Browser TTS or text-only coaching.

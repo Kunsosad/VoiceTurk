@@ -21,6 +21,17 @@ error_code
 message
 details optional
 Endpoints
+
+POST /demo/seed
+
+Role:
+
+Admin/demo operator
+
+State side effect:
+
+Idempotently creates the three demo users and an active campaign with 20 RecordingItems for the current API process.
+
 GET /health
 
 Role:
@@ -60,6 +71,22 @@ State side effect:
 
 creates Campaign in DRAFT
 creates ScriptLine in DRAFT or APPROVED depending implementation
+
+GET /campaigns
+
+Role:
+
+any demo role
+
+Returns campaign summaries/details used by Buyer and Contributor screens.
+
+GET /campaigns/{campaign_id}/coverage
+
+Role:
+
+Buyer
+
+Calculates live counts and coverage ratio from RecordingItems. No CampaignCoverage entity is created.
 POST /campaigns/{campaign_id}/generate-items
 
 Role:
@@ -134,6 +161,14 @@ Validator
 Returns:
 
 AudioSample where status = REVIEW_PENDING
+
+GET /validation/audio-samples/{sample_id}
+
+Role:
+
+Validator
+
+Returns snapshots, quality metadata, context, status, and a backend media URL.
 POST /validation/audio-samples/{sample_id}/review
 
 Role:
@@ -172,6 +207,14 @@ uses accepted AudioSamples only
 writes package files
 computes manifest hash
 calls ProofProvider
+
+GET /datasets/{dataset_version_id}
+
+Role:
+
+Buyer/Admin
+
+Returns backend-owned DatasetVersion state and package paths.
 POST /datasets/verify
 
 Role:
