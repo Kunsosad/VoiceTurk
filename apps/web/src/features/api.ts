@@ -23,4 +23,8 @@ export const api = {
   review: (id: string, decision: string) => request(`/validation/audio-samples/${id}/review`,json('POST',{decision,validator_id:'user_001',validator_notes:'Self-reviewed in VoiceTurk Studio.'})),
   build: (campaign_id: string) => request<Dataset>('/datasets/build',json('POST',{campaign_id,version:'1.0'})),
   verify: (dataset_version_id: string, manifest_hash: string) => request<{result:string}>('/datasets/verify',json('POST',{dataset_version_id,manifest_hash})),
+  storageHealth: () => request<Record<string,unknown>>('/debug/storage/health',undefined,10000,'STORAGE_HEALTH'),
+  debugStorageInit: () => request<{probe_id:string;object_key:string;upload_url:string}>('/debug/storage/uploads/init',json('POST',{content_type:'text/plain'}),10000,'STORAGE_PROBE_INIT'),
+  debugStoragePut: async (url:string,blob:Blob) => {const response=await fetchWithTimeout(url.startsWith('http')?url:apiUrl(url),{method:'PUT',headers:{'Content-Type':blob.type||'text/plain'},body:blob},30000,'STORAGE_PROBE_PUT');if(!response.ok)throw new Error(`Storage probe PUT failed (${response.status})`)},
+  debugStorageVerify: (probeId:string) => request<{exists:boolean;metadata:Record<string,unknown>}>(`/debug/storage/uploads/${probeId}/verify`,json('POST'),10000,'STORAGE_PROBE_VERIFY'),
 }
