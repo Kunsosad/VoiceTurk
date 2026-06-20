@@ -1,0 +1,20 @@
+﻿{
+"session_id": "session_001",
+"campaign_id": "camp_001",
+"contributor_id": "contributor_001",
+"realtime": {
+"provider": "browser_tts",
+"agora_channel": null,
+"agora_token": null
+},
+"items": [
+{
+"item_id": "item_001",
+"line_id": "line_001",
+"transcript": "Tôi chưa nhận được hàng.",
+"intent": "delivery_delay",
+"target_emotion": "impatient",
+"context_brief": "Khách hàng đã chờ đơn hàng lâu hơn ngày dự kiến."
+}
+]
+}

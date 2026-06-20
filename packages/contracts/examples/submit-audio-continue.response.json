@@ -1,0 +1,7 @@
+﻿{
+"action": "CONTINUE_NEXT",
+"reason_code": "FAST_CHECK_PASSED",
+"message_vi": "Ổn rồi, mình chuyển sang câu tiếp theo nhé.",
+"sample_id": "sample_001",
+"next_item_available": true
+}

@@ -1,0 +1,7 @@
+﻿{
+"action": "RETAKE_NOW",
+"reason_code": "AUDIO_TOO_SHORT",
+"message_vi": "Audio hơi ngắn, bạn đọc lại câu này rõ hơn nhé.",
+"retry_same_item": true,
+"sample_id": null
+}
