@@ -7,7 +7,13 @@ from fastapi.responses import JSONResponse
 from app.adapters.http.router import router
 
 app = FastAPI(title="VoiceTurk API", version="0.1.0")
-logging.getLogger("voiceturk.pipeline").setLevel(logging.INFO)
+pipeline_logger = logging.getLogger("voiceturk.pipeline")
+pipeline_logger.setLevel(logging.INFO)
+if not pipeline_logger.handlers:
+    pipeline_handler = logging.StreamHandler()
+    pipeline_handler.setFormatter(logging.Formatter("%(message)s"))
+    pipeline_logger.addHandler(pipeline_handler)
+pipeline_logger.propagate = False
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)

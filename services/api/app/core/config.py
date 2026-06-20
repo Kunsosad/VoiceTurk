@@ -2,6 +2,9 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+API_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
 
 class Settings(BaseSettings):
     app_env: str = "development"
@@ -38,4 +41,4 @@ class Settings(BaseSettings):
     fast_check_min_file_size_bytes: int = 1000
     fast_check_timeout_seconds: float = 15.0
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=(REPO_ROOT / ".env", API_ROOT / ".env"), extra="ignore")

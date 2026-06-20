@@ -19,13 +19,16 @@ class MinioStorageAdapter(ObjectStoragePort):
             hostname = urlparse(endpoint_url).hostname or ""
             if hostname and "." not in hostname and hostname not in {"localhost"}:
                 raise RuntimeError("S3_PUBLIC_BASE_URL is required because S3_ENDPOINT_URL is not browser-reachable")
+        self.endpoint_url = endpoint_url.rstrip("/")
+        self.region = "us-east-1" if region in {"", "auto"} else region
+        self.region_was_normalized = region == "auto"
         self.bucket = bucket
         self.public_base_url = (public_base_url or endpoint_url).rstrip("/")
         self.client = boto3.client("s3", endpoint_url=endpoint_url, aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key, region_name=region, config=Config(signature_version="s3v4"))
+            aws_secret_access_key=secret_key, region_name=self.region, config=Config(signature_version="s3v4"))
         self.presign_client = self.client if self.public_base_url == endpoint_url.rstrip("/") else boto3.client(
             "s3", endpoint_url=self.public_base_url, aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key, region_name=region, config=Config(signature_version="s3v4"))
+            aws_secret_access_key=secret_key, region_name=self.region, config=Config(signature_version="s3v4"))
         try:
             self.client.head_bucket(Bucket=bucket)
         except ClientError as exc:
@@ -36,6 +39,21 @@ class MinioStorageAdapter(ObjectStoragePort):
                 raise RuntimeError(f"MinIO bucket '{bucket}' does not exist and APP_ENV={app_env} forbids auto-creation") from exc
             else:
                 raise RuntimeError(f"Cannot access MinIO bucket '{bucket}': {exc}") from exc
+
+    def diagnostics(self) -> dict[str, Any]:
+        warnings = []
+        if self.region_was_normalized:
+            warnings.append("S3_REGION=auto normalized to us-east-1 for MinIO signing")
+        hostname = urlparse(self.public_base_url).hostname or ""
+        if hostname == "127.0.0.1":
+            warnings.append("Public URL is reachable only from this machine")
+        elif hostname.startswith("100.74."):
+            warnings.append("Public URL requires Tailscale/VPN reachability")
+        elif hostname.startswith("192.168."):
+            warnings.append("Public URL requires LAN reachability")
+        return {"provider": "minio", "endpoint_url": self.endpoint_url,
+                "public_base_url": self.public_base_url, "bucket": self.bucket,
+                "region": self.region, "warnings": warnings}
 
     def create_presigned_put_url(self, object_key: str, content_type: str, expires_seconds: int = 900) -> str:
         return self.presign_client.generate_presigned_url("put_object", Params={"Bucket": self.bucket, "Key": object_key,

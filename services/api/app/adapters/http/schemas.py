@@ -67,3 +67,7 @@ class AgoraTokenRequest(BaseModel):
 
 class RetakeStartRequest(BaseModel):
     contributor_id: str = "user_001"
+
+
+class DebugStorageInitRequest(BaseModel):
+    content_type: str = "text/plain"

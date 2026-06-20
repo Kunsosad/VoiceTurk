@@ -23,7 +23,13 @@ def get_service() -> VoiceTurkService:
     settings = get_settings()
     if settings.fast_check_provider != "rule_based" or settings.proof_provider != "local_hash":
         raise RuntimeError("Supported providers: FAST_CHECK_PROVIDER=rule_based and PROOF_PROVIDER=local_hash")
-    database_path = Path(settings.database_url.removeprefix("sqlite:///"))
+    if settings.database_url.startswith(("sqlite:///", "sqlite+aiosqlite:///")):
+        database_value = settings.database_url.split("///", 1)[1]
+    else:
+        raise RuntimeError("DATABASE_URL must use sqlite:/// or sqlite+aiosqlite:/// for the MVP")
+    database_path = Path(database_value)
+    if not database_path.is_absolute():
+        database_path = Path(__file__).resolve().parents[2] / database_path
     repository = SQLiteRepository(database_path)
     if settings.object_storage_provider == "local":
         storage = LocalStorageAdapter(settings.local_storage_dir)

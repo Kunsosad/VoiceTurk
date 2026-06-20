@@ -1,4 +1,5 @@
 import math
+import logging
 import os
 import struct
 import time
@@ -53,11 +54,19 @@ def upload(client: TestClient, session: dict, item_id: str, audio: bytes) -> dic
         "client_metrics": {"duration_ms": 1300, "rms_dbfs": -15}}).json()
 
 
-def test_unified_dual_pipeline(tmp_path: Path, caplog):
-    caplog.set_level("INFO", logger="voiceturk.pipeline")
+def test_unified_dual_pipeline(tmp_path: Path):
     service = make_service(tmp_path)
     app.dependency_overrides[get_service] = lambda: service
     client = TestClient(app)
+    messages: list[str] = []
+
+    class CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    handler = CaptureHandler()
+    pipeline_logger = logging.getLogger("voiceturk.pipeline")
+    pipeline_logger.addHandler(handler)
     try:
         seeded = client.post("/demo/seed-unified-user").json()
         assert seeded["user_id"] == "user_001" and seeded["total_items"] == 20
@@ -65,6 +74,10 @@ def test_unified_dual_pipeline(tmp_path: Path, caplog):
                                                                   "contributor_id": "user_001"}).json()
         assert session["realtime"]["provider"] == "browser_tts"
         first, second = session["items"][:2]
+        first_action = client.get(f"/recording-sessions/{session['session_id']}/next-action").json()
+        assert first_action["action"] == "START_ITEM"
+        assert first_action["debug"]["assigned_count"] == 20
+        assert first_action["debug"]["submitted_in_session_count"] == 0
 
         missing_slot = client.post("/audio/uploads/init", json={"session_id": session["session_id"],
             "item_id": first["item_id"], "filename": "recording.wav", "content_type": "audio/wav",
@@ -106,12 +119,13 @@ def test_unified_dual_pipeline(tmp_path: Path, caplog):
         verified = client.post("/datasets/verify", json={"dataset_version_id": dataset["dataset_version_id"],
                                                          "manifest_hash": dataset["manifest_hash"]}).json()
         assert verified["result"] == "MATCH"
-        events = "\n".join(caplog.messages)
+        events = "\n".join(messages)
         for event in ("upload_init_received", "presigned_url_created", "upload_complete_received",
                       "fastcheck_started", "fastcheck_finished", "audio_sample_created",
                       "deepcheck_enqueued", "complete_response_returned"):
             assert f'"event": "{event}"' in events
     finally:
+        pipeline_logger.removeHandler(handler)
         app.dependency_overrides.clear()
 
 
@@ -123,6 +137,17 @@ def test_sqlite_repository_survives_restart(tmp_path: Path):
     restored = second.repo.get("users", "user_001")
     assert restored.name == "VoiceTurk Operator" and restored.role == UserRole.USER
     assert second.campaign_detail(seeded["campaign_id"])["item_count"] == 20
+
+
+def test_local_storage_health_and_browser_probe(tmp_path: Path):
+    service = make_service(tmp_path)
+    health = service.storage_health()
+    assert health["provider"] == "local" and health["can_put_object"]
+    probe = service.debug_storage_upload_init("text/plain")
+    assert probe["upload_url"].startswith("/debug/storage/uploads/")
+    service.debug_storage_upload_put(probe["probe_id"], b"browser probe", "text/plain")
+    verified = service.debug_storage_upload_verify(probe["probe_id"])
+    assert verified["exists"] and verified["metadata"]["size_bytes"] == 13
 
 
 def test_architecture_boundaries():

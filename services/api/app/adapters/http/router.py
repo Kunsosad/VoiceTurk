@@ -1,11 +1,17 @@
-from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 
 from app.adapters.http.schemas import (AgoraTokenRequest, CampaignCreate, DatasetBuildRequest, DatasetVerifyRequest,
-    RetakeStartRequest, ReviewRequest, SessionStart, UploadCompleteRequest, UploadInitRequest)
+    DebugStorageInitRequest, RetakeStartRequest, ReviewRequest, SessionStart, UploadCompleteRequest, UploadInitRequest)
 from app.application.service import VoiceTurkService
-from app.composition.container import get_service
+from app.composition.container import get_service, get_settings
+from app.core.config import Settings
 
 router = APIRouter()
+
+
+def development_only(settings: Settings) -> None:
+    if settings.app_env != "development":
+        raise HTTPException(status_code=404, detail="Debug endpoint is only available in development")
 
 
 @router.get("/health")
@@ -162,6 +168,33 @@ def retry_deep_check(sample_id: str, service: VoiceTurkService = Depends(get_ser
 @router.post("/realtime/agora/token")
 def agora_token(body: AgoraTokenRequest, service: VoiceTurkService = Depends(get_service)):
     return service.issue_realtime_token(body.channel, body.uid, body.role)
+
+
+@router.get("/debug/storage/health")
+def storage_health(service: VoiceTurkService = Depends(get_service), settings: Settings = Depends(get_settings)):
+    development_only(settings)
+    return service.storage_health()
+
+
+@router.post("/debug/storage/uploads/init")
+def debug_storage_init(body: DebugStorageInitRequest, service: VoiceTurkService = Depends(get_service),
+                       settings: Settings = Depends(get_settings)):
+    development_only(settings)
+    return service.debug_storage_upload_init(body.content_type)
+
+
+@router.put("/debug/storage/uploads/{probe_id}/content")
+async def debug_storage_put(probe_id: str, request: Request, service: VoiceTurkService = Depends(get_service),
+                            settings: Settings = Depends(get_settings)):
+    development_only(settings)
+    return service.debug_storage_upload_put(probe_id, await request.body(), request.headers.get("content-type", "text/plain"))
+
+
+@router.post("/debug/storage/uploads/{probe_id}/verify")
+def debug_storage_verify(probe_id: str, service: VoiceTurkService = Depends(get_service),
+                         settings: Settings = Depends(get_settings)):
+    development_only(settings)
+    return service.debug_storage_upload_verify(probe_id)
 
 
 @router.post("/datasets/build", status_code=201)

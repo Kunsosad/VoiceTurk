@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
@@ -144,26 +145,49 @@ class VoiceTurkService:
 
     def next_action(self, session_id: str) -> dict[str, Any]:
         session = self._required("sessions", session_id)
-        if session.status != RecordingSessionStatus.ACTIVE:
-            return {"action": "SESSION_COMPLETE", "item": None, "coach_message_vi": "Phiên thu đã kết thúc.", "retake_count": 0,
-                    "progress": self._progress(session.campaign_id)}
         items = self._campaign("items", session.campaign_id)
+        samples = [value for value in self.repo.list("samples") if value.session_id == session_id]
+        def debug(reason: str) -> dict[str, Any]:
+            return {"session_id": session_id, "campaign_id": session.campaign_id,
+                "assigned_count": sum(x.assigned_to == session.contributor_id and x.status == RecordingItemStatus.ASSIGNED for x in items),
+                "open_count": sum(x.status == RecordingItemStatus.OPEN for x in items),
+                "review_pending_count": sum(x.status == RecordingItemStatus.REVIEW_PENDING for x in items),
+                "need_retake_count": sum(x.status == RecordingItemStatus.NEED_RETAKE for x in items),
+                "accepted_count": sum(x.status == RecordingItemStatus.ACCEPTED for x in items),
+                "submitted_in_session_count": len(samples), "reason": reason}
+        def response(action: str, item: RecordingItem | None, message: str, reason: str) -> dict[str, Any]:
+            value = {"action": action, "item": self._item_dto(item) if item else None,
+                "coach_message_vi": message, "retake_count": self._retake_count(session.campaign_id),
+                "progress": self._progress(session.campaign_id), "debug": debug(reason)}
+            self._log("next_action_decided", action=action, reason_code=reason, **value["debug"])
+            return value
+        if session.status != RecordingSessionStatus.ACTIVE:
+            return response("SESSION_COMPLETE", None, "Phiên thu đã kết thúc.", "session is not active")
+        if not items:
+            return response("ERROR", None, "Chiến dịch chưa có câu thu âm. Bạn hãy tạo danh sách câu trước.", "campaign has no items")
         normal = next((x for x in items if x.assigned_to == session.contributor_id and x.status == RecordingItemStatus.ASSIGNED), None)
         if normal:
-            return {"action": "START_ITEM", "item": self._item_dto(normal),
-                    "coach_message_vi": self._instruction(normal), "retake_count": self._retake_count(session.campaign_id),
-                    "progress": self._progress(session.campaign_id)}
+            return response("START_ITEM", normal, self._instruction(normal), "assigned item available")
+        open_item = next((x for x in items if x.status == RecordingItemStatus.OPEN), None)
+        if open_item:
+            open_item.status, open_item.assigned_to, open_item.assigned_at = RecordingItemStatus.ASSIGNED, session.contributor_id, now()
+            self.repo.add("items", open_item)
+            return response("START_ITEM", open_item, self._instruction(open_item), "open item assigned to active session")
         retake = next((x for x in items if x.status == RecordingItemStatus.NEED_RETAKE), None)
         if retake:
             retake.status, retake.assigned_to, retake.assigned_at = RecordingItemStatus.ASSIGNED, session.contributor_id, now()
             self.repo.add("items", retake)
-            return {"action": "RETAKE_ITEM", "item": self._item_dto(retake),
-                "coach_message_vi": "Mình thấy có câu cần thu lại để dữ liệu tốt hơn. Mình sẽ hướng dẫn bạn đọc lại ngay bây giờ.",
-                "retake_count": self._retake_count(session.campaign_id), "progress": self._progress(session.campaign_id)}
+            return response("RETAKE_ITEM", retake,
+                "Mình thấy có câu cần thu lại để dữ liệu tốt hơn. Mình sẽ hướng dẫn bạn đọc lại ngay bây giờ.",
+                "retake item assigned")
         checking = any(x.campaign_id == session.campaign_id and x.status == AudioSampleStatus.CHECKING for x in self.repo.list("samples"))
-        return {"action": "WAIT_DEEPCHECK" if checking else "SESSION_COMPLETE", "item": None,
-            "coach_message_vi": "DeepCheck đang xử lý nền." if checking else "Bạn đã hoàn thành các câu hiện có.",
-            "retake_count": 0, "progress": self._progress(session.campaign_id)}
+        if checking:
+            return response("WAIT_DEEPCHECK", None, "DeepCheck đang xử lý nền.", "samples are still checking")
+        current_debug = debug("completion evaluation")
+        if current_debug["assigned_count"] or current_debug["open_count"]:
+            return response("WAITING_FOR_RECORDING", None, "Phiên vẫn còn câu chưa thu. Hãy thử tải lại câu tiếp theo.",
+                            "unrecorded items remain")
+        return response("SESSION_COMPLETE", None, "Bạn đã hoàn thành các câu hiện có.", "no assigned, open, or retake items remain")
 
     def session_retakes(self, session_id: str) -> list[dict[str, Any]]:
         return self.campaign_retakes(self._required("sessions", session_id).campaign_id)
@@ -227,6 +251,7 @@ class VoiceTurkService:
         return {"upload_id": upload_id, "status": upload["status"], "size_bytes": len(data)}
 
     def complete_upload(self, data: dict[str, Any]) -> tuple[dict[str, Any], AudioSample | None]:
+        complete_started_at = time.perf_counter()
         upload = self._required("uploads", data["upload_id"])
         context = {"session_id": data.get("session_id"), "item_id": data.get("item_id"),
                    "upload_id": data.get("upload_id"), "object_key": data.get("object_key")}
@@ -245,6 +270,7 @@ class VoiceTurkService:
         session = self._required("sessions", upload["session_id"])
         audio = self.storage.get_object(upload["object_key"])
         self._log("fastcheck_started", **context)
+        fastcheck_started_at = time.perf_counter()
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fastcheck")
         future = executor.submit(self.fast_check.check, audio, upload["filename"], upload["content_type"], data.get("client_metrics"))
         try:
@@ -257,13 +283,15 @@ class VoiceTurkService:
                 self.storage.delete_object(upload["object_key"])
             response = self._fast_response(False, "FAST_CHECK_TIMEOUT",
                 "Kiểm tra audio hơi lâu. Bạn thử gửi lại câu này nhé.", {}, None)
-            self._log("fastcheck_finished", **context, action=response["action"], reason_code=response["reason_code"])
+            self._log("fastcheck_finished", **context, action=response["action"], reason_code=response["reason_code"],
+                      fastcheck_duration_ms=round((time.perf_counter() - fastcheck_started_at) * 1000))
             self._log("complete_response_returned", **context, action=response["action"], reason_code=response["reason_code"])
             return response, None
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         self._log("fastcheck_finished", **context, action="CONTINUE_NEXT" if result.passed else "RETAKE_NOW",
-                  reason_code=result.reason_code, duration_ms=result.metrics.get("duration_ms"))
+                  reason_code=result.reason_code, duration_ms=result.metrics.get("duration_ms"),
+                  fastcheck_duration_ms=round((time.perf_counter() - fastcheck_started_at) * 1000))
         if not result.passed:
             upload["status"] = "FAST_CHECK_FAILED"
             self.repo.add("uploads", upload)
@@ -299,7 +327,8 @@ class VoiceTurkService:
         self._log("deepcheck_enqueued", **context, sample_id=sample_id, official_object_key=official_key)
         response = self._fast_response(True, result.reason_code, result.message_vi, result.metrics, sample_id, result.severity, result.warnings)
         self._log("complete_response_returned", **context, sample_id=sample_id, official_object_key=official_key,
-                  action=response["action"], reason_code=response["reason_code"], duration_ms=result.metrics.get("duration_ms"))
+                  action=response["action"], reason_code=response["reason_code"], duration_ms=result.metrics.get("duration_ms"),
+                  total_complete_duration_ms=round((time.perf_counter() - complete_started_at) * 1000))
         return response, sample
 
     def submit_audio(self, item_id: str, session_id: str, contributor_id: str, duration_ms: int,
@@ -473,6 +502,54 @@ class VoiceTurkService:
 
     def issue_realtime_token(self, channel: str, uid: str, role: str) -> dict[str, Any]:
         return self.realtime.issue_token(channel, uid, role)
+
+    def storage_health(self) -> dict[str, Any]:
+        info = self.storage.diagnostics()
+        key = f"diagnostics/health/{uuid4().hex}.txt"
+        can_put = can_get_put = can_get_get = False
+        warnings = list(info.get("warnings", []))
+        try:
+            self.storage.put_object(key, b"voiceturk-storage-health", "text/plain")
+            can_put = self.storage.object_exists(key) and self.storage.get_object_metadata(key).get("size_bytes", 0) > 0
+            can_get_put = bool(self.storage.create_presigned_put_url(key, "text/plain", 60))
+            can_get_get = bool(self.storage.create_presigned_get_url(key, 60))
+        except Exception as exc:
+            warnings.append(f"STORAGE_HEALTH_FAILED: {type(exc).__name__}: {exc}")
+        finally:
+            try:
+                self.storage.delete_object(key)
+            except Exception:
+                pass
+        return {**info, "bucket_exists": True if info["provider"] == "minio" else None,
+                "can_put_object": can_put, "can_generate_presigned_put": can_get_put,
+                "can_generate_presigned_get": can_get_get, "warnings": warnings}
+
+    def debug_storage_upload_init(self, content_type: str = "text/plain") -> dict[str, Any]:
+        probe_id = new_id("storage_probe")
+        object_key = f"diagnostics/browser/{uuid4().hex}.txt"
+        probe = {"probe_id": probe_id, "object_key": object_key, "content_type": content_type, "status": "INITIALIZED"}
+        self.repo.add("storage_probes", probe)
+        presigned = self.storage.create_presigned_put_url(object_key, content_type, self.presigned_expire_seconds)
+        return {"probe_id": probe_id, "object_key": object_key,
+                "upload_url": presigned or f"/debug/storage/uploads/{probe_id}/content",
+                "expires_in": self.presigned_expire_seconds}
+
+    def debug_storage_upload_put(self, probe_id: str, data: bytes, content_type: str) -> dict[str, Any]:
+        probe = self._required("storage_probes", probe_id)
+        self.storage.put_object(probe["object_key"], data, content_type)
+        probe["status"] = "UPLOADED"
+        self.repo.add("storage_probes", probe)
+        return {"probe_id": probe_id, "status": probe["status"], "size_bytes": len(data)}
+
+    def debug_storage_upload_verify(self, probe_id: str) -> dict[str, Any]:
+        probe = self._required("storage_probes", probe_id)
+        exists = self.storage.object_exists(probe["object_key"])
+        metadata = self.storage.get_object_metadata(probe["object_key"]) if exists else None
+        if exists:
+            self.storage.delete_object(probe["object_key"])
+        self.repo.delete("storage_probes", probe_id)
+        return {"probe_id": probe_id, "object_key": probe["object_key"], "exists": exists,
+                "metadata": metadata, "cleaned_up": exists}
 
     def _required(self, kind: str, entity_id: str) -> Any:
         entity = self.repo.get(kind, entity_id)

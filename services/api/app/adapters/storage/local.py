@@ -17,6 +17,10 @@ class LocalStorageAdapter(ObjectStoragePort):
             raise ValueError("Invalid object key")
         return path
 
+    def diagnostics(self) -> dict[str, Any]:
+        return {"provider": "local", "endpoint_url": str(self.root), "public_base_url": None,
+                "bucket": None, "region": None, "warnings": []}
+
     def create_presigned_put_url(self, object_key: str, content_type: str, expires_seconds: int = 900) -> str | None:
         return None
 
