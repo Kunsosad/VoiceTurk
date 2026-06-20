@@ -29,7 +29,8 @@ def get_service() -> VoiceTurkService:
         storage = LocalStorageAdapter(settings.local_storage_dir)
     elif settings.object_storage_provider == "minio":
         storage = MinioStorageAdapter(settings.s3_endpoint_url, settings.s3_bucket_name, settings.s3_access_key_id,
-            settings.s3_secret_access_key, settings.s3_region, settings.s3_secure, settings.s3_public_base_url)
+            settings.s3_secret_access_key, settings.s3_region, settings.s3_secure, settings.s3_public_base_url,
+            settings.app_env)
     else:
         raise RuntimeError("OBJECT_STORAGE_PROVIDER must be local or minio")
     fast_check = RuleBasedFastCheckAdapter(min_duration_ms=settings.fast_check_min_duration_ms,
@@ -43,4 +44,5 @@ def get_service() -> VoiceTurkService:
     realtime = AgoraRealtimeTokenAdapter(settings.agora_app_id, settings.agora_app_certificate) if settings.realtime_provider == "agora" else AgoraRealtimeTokenAdapter("", "")
     return VoiceTurkService(repository, storage, fast_check, HeuristicDeepCheckAdapter(), LocalHashProofAdapter(),
         InProcessJobQueueAdapter(), realtime,
-        settings.local_export_dir, settings.keep_failed_uploads)
+        settings.local_export_dir, settings.keep_failed_uploads, settings.s3_presigned_expire_seconds,
+        settings.fast_check_timeout_seconds)

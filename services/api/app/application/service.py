@@ -1,6 +1,8 @@
 import hashlib
 import json
+import logging
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, BinaryIO
 from uuid import uuid4
@@ -13,6 +15,8 @@ from app.ports.providers import (DeepCheckPort, FastCheckPort, JobQueuePort, Obj
                                  ProofProviderPort, RealtimeTokenPort)
 from app.ports.repositories import RepositoryPort
 
+logger = logging.getLogger("voiceturk.pipeline")
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:10]}"
@@ -21,10 +25,12 @@ def new_id(prefix: str) -> str:
 class VoiceTurkService:
     def __init__(self, repository: RepositoryPort, storage: ObjectStoragePort, fast_check: FastCheckPort,
                  deep_check: DeepCheckPort, proof: ProofProviderPort, queue: JobQueuePort,
-                 realtime: RealtimeTokenPort, export_root: Path, keep_failed_uploads: bool = False) -> None:
+                 realtime: RealtimeTokenPort, export_root: Path, keep_failed_uploads: bool = False,
+                 presigned_expire_seconds: int = 900, fast_check_timeout_seconds: float = 15.0) -> None:
         self.repo, self.storage, self.fast_check = repository, storage, fast_check
         self.deep_check, self.proof, self.queue, self.realtime = deep_check, proof, queue, realtime
         self.export_root, self.keep_failed_uploads = export_root, keep_failed_uploads
+        self.presigned_expire_seconds, self.fast_check_timeout_seconds = presigned_expire_seconds, fast_check_timeout_seconds
 
     # Unified user and campaign workflow
     def seed_demo(self) -> dict[str, Any]:
@@ -193,6 +199,7 @@ class VoiceTurkService:
 
     # Temporary upload -> FastCheck -> official sample
     def init_upload(self, data: dict[str, Any]) -> dict[str, Any]:
+        self._log("upload_init_received", session_id=data.get("session_id"), item_id=data.get("item_id"))
         session = self._required("sessions", data["session_id"])
         item = self._required("items", data["item_id"])
         if session.status != RecordingSessionStatus.ACTIVE or item.status != RecordingItemStatus.ASSIGNED:
@@ -205,9 +212,12 @@ class VoiceTurkService:
             "content_type": data.get("content_type") or "audio/wav", "size_bytes": data.get("size_bytes", 0),
             "status": "INITIALIZED", "created_at": now()}
         self.repo.add("uploads", upload)
-        presigned = self.storage.create_presigned_put_url(object_key, upload["content_type"], 900)
+        presigned = self.storage.create_presigned_put_url(object_key, upload["content_type"], self.presigned_expire_seconds)
+        self._log("presigned_url_created", session_id=session.session_id, item_id=item.item_id,
+                  upload_id=upload_id, object_key=object_key)
         return {"upload_id": upload_id, "object_key": object_key,
-            "upload_url": presigned or f"/audio/uploads/{upload_id}/content", "upload_method": "PUT", "expires_in": 900}
+            "upload_url": presigned or f"/audio/uploads/{upload_id}/content", "upload_method": "PUT",
+            "expires_in": self.presigned_expire_seconds}
 
     def put_upload(self, upload_id: str, data: bytes, content_type: str | None = None) -> dict[str, Any]:
         upload = self._required("uploads", upload_id)
@@ -218,26 +228,58 @@ class VoiceTurkService:
 
     def complete_upload(self, data: dict[str, Any]) -> tuple[dict[str, Any], AudioSample | None]:
         upload = self._required("uploads", data["upload_id"])
+        context = {"session_id": data.get("session_id"), "item_id": data.get("item_id"),
+                   "upload_id": data.get("upload_id"), "object_key": data.get("object_key")}
+        self._log("upload_complete_received", **context)
         if upload["session_id"] != data["session_id"] or upload["item_id"] != data["item_id"] or upload["object_key"] != data["object_key"]:
             raise ValueError("Upload completion does not match initialized upload")
-        if not self.storage.object_exists(upload["object_key"]):
-            return self._fast_response(False, "FILE_MISSING", "Không tìm thấy file âm thanh. Bạn thử ghi lại nhé.", {}, None), None
+        self._log("object_exists_check_started", **context)
+        exists = self.storage.object_exists(upload["object_key"])
+        self._log("object_exists_check_finished", **context, object_exists=exists)
+        if not exists:
+            response = self._fast_response(False, "UPLOAD_OBJECT_NOT_FOUND",
+                "Không tìm thấy file audio vừa upload. Bạn thử gửi lại câu này nhé.", {}, None)
+            self._log("complete_response_returned", **context, action=response["action"], reason_code=response["reason_code"])
+            return response, None
         item = self._required("items", upload["item_id"])
         session = self._required("sessions", upload["session_id"])
         audio = self.storage.get_object(upload["object_key"])
-        result = self.fast_check.check(audio, upload["filename"], upload["content_type"], data.get("client_metrics"))
+        self._log("fastcheck_started", **context)
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fastcheck")
+        future = executor.submit(self.fast_check.check, audio, upload["filename"], upload["content_type"], data.get("client_metrics"))
+        try:
+            result = future.result(timeout=self.fast_check_timeout_seconds)
+        except FutureTimeoutError:
+            future.cancel()
+            upload["status"] = "FAST_CHECK_TIMEOUT"
+            self.repo.add("uploads", upload)
+            if not self.keep_failed_uploads:
+                self.storage.delete_object(upload["object_key"])
+            response = self._fast_response(False, "FAST_CHECK_TIMEOUT",
+                "Kiểm tra audio hơi lâu. Bạn thử gửi lại câu này nhé.", {}, None)
+            self._log("fastcheck_finished", **context, action=response["action"], reason_code=response["reason_code"])
+            self._log("complete_response_returned", **context, action=response["action"], reason_code=response["reason_code"])
+            return response, None
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        self._log("fastcheck_finished", **context, action="CONTINUE_NEXT" if result.passed else "RETAKE_NOW",
+                  reason_code=result.reason_code, duration_ms=result.metrics.get("duration_ms"))
         if not result.passed:
             upload["status"] = "FAST_CHECK_FAILED"
             self.repo.add("uploads", upload)
             if not self.keep_failed_uploads:
                 self.storage.delete_object(upload["object_key"])
-            return self._fast_response(False, result.reason_code, result.message_vi, result.metrics, None, result.severity, result.warnings), None
+            response = self._fast_response(False, result.reason_code, result.message_vi, result.metrics, None, result.severity, result.warnings)
+            self._log("complete_response_returned", **context, action=response["action"], reason_code=response["reason_code"],
+                      duration_ms=result.metrics.get("duration_ms"))
+            return response, None
         line = self._required("script_lines", item.line_id)
         sample_id = new_id("sample")
         suffix = Path(upload["filename"]).suffix.lower() or ".wav"
         official_key = f"audio/{item.campaign_id}/{item.item_id}/{sample_id}{suffix}"
         self.storage.copy_object(upload["object_key"], official_key)
         self.storage.delete_object(upload["object_key"])
+        self._log("audio_promoted_to_official", **context, official_object_key=official_key, sample_id=sample_id)
         sample = AudioSample(sample_id, item.campaign_id, item.line_id, item.item_id, session.session_id,
             session.contributor_id, official_key, int(result.metrics["duration_ms"]), line.transcript, line.intent, item.target_emotion)
         for field, key in (("loudness_db", "rms_dbfs"), ("silence_ratio", "silence_ratio"), ("sample_rate", "sample_rate"),
@@ -248,12 +290,17 @@ class VoiceTurkService:
             ("audio_container", "container"), ("fast_check_score", "fast_check_score")):
             setattr(sample, field, result.metrics.get(key))
         self.repo.add("samples", sample)
+        self._log("audio_sample_created", **context, sample_id=sample_id, official_object_key=official_key)
         item.status = RecordingItemStatus.REVIEW_PENDING
         self.repo.add("items", item)
         upload["status"], upload["official_object_key"], upload["sample_id"] = "COMPLETED", official_key, sample_id
         self.repo.add("uploads", upload)
         self.queue.enqueue(sample_id)
-        return self._fast_response(True, result.reason_code, result.message_vi, result.metrics, sample_id, result.severity, result.warnings), sample
+        self._log("deepcheck_enqueued", **context, sample_id=sample_id, official_object_key=official_key)
+        response = self._fast_response(True, result.reason_code, result.message_vi, result.metrics, sample_id, result.severity, result.warnings)
+        self._log("complete_response_returned", **context, sample_id=sample_id, official_object_key=official_key,
+                  action=response["action"], reason_code=response["reason_code"], duration_ms=result.metrics.get("duration_ms"))
+        return response, sample
 
     def submit_audio(self, item_id: str, session_id: str, contributor_id: str, duration_ms: int,
                      filename: str, content_type: str | None, source: BinaryIO) -> tuple[dict[str, Any], AudioSample | None]:
@@ -458,3 +505,7 @@ class VoiceTurkService:
         return {"action": "CONTINUE_NEXT" if passed else "RETAKE_NOW", "reason_code": reason,
             "severity": severity, "retry_same_item": not passed, "message_vi": message, "metrics": metrics,
             "warnings": warnings or [], "sample_id": sample_id, "next_item_available": passed}
+
+    def _log(self, event: str, **fields: Any) -> None:
+        logger.info(json.dumps({"event": event, **{key: value for key, value in fields.items() if value is not None}},
+                               ensure_ascii=False, default=str))

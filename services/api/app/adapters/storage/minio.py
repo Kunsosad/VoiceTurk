@@ -1,4 +1,5 @@
 from typing import Any, BinaryIO
+from urllib.parse import urlparse
 
 import boto3
 from botocore.client import Config
@@ -9,30 +10,39 @@ from app.ports.providers import ObjectStoragePort
 
 class MinioStorageAdapter(ObjectStoragePort):
     def __init__(self, endpoint_url: str, bucket: str, access_key: str, secret_key: str,
-                 region: str, secure: bool, public_base_url: str = "") -> None:
+                 region: str, secure: bool, public_base_url: str = "", app_env: str = "development") -> None:
         if not endpoint_url or not access_key or not secret_key:
             raise RuntimeError("MinIO requires S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, and S3_SECRET_ACCESS_KEY")
         if not endpoint_url.startswith(("http://", "https://")):
             endpoint_url = f"{'https' if secure else 'http'}://{endpoint_url}"
+        if not public_base_url:
+            hostname = urlparse(endpoint_url).hostname or ""
+            if hostname and "." not in hostname and hostname not in {"localhost"}:
+                raise RuntimeError("S3_PUBLIC_BASE_URL is required because S3_ENDPOINT_URL is not browser-reachable")
         self.bucket = bucket
-        self.public_base_url = public_base_url.rstrip("/")
+        self.public_base_url = (public_base_url or endpoint_url).rstrip("/")
         self.client = boto3.client("s3", endpoint_url=endpoint_url, aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key, region_name=region, config=Config(signature_version="s3v4"))
+        self.presign_client = self.client if self.public_base_url == endpoint_url.rstrip("/") else boto3.client(
+            "s3", endpoint_url=self.public_base_url, aws_access_key_id=access_key,
             aws_secret_access_key=secret_key, region_name=region, config=Config(signature_version="s3v4"))
         try:
             self.client.head_bucket(Bucket=bucket)
         except ClientError as exc:
             code = str(exc.response.get("Error", {}).get("Code", ""))
-            if code in {"404", "NoSuchBucket"}:
+            if code in {"404", "NoSuchBucket"} and app_env == "development":
                 self.client.create_bucket(Bucket=bucket)
+            elif code in {"404", "NoSuchBucket"}:
+                raise RuntimeError(f"MinIO bucket '{bucket}' does not exist and APP_ENV={app_env} forbids auto-creation") from exc
             else:
                 raise RuntimeError(f"Cannot access MinIO bucket '{bucket}': {exc}") from exc
 
     def create_presigned_put_url(self, object_key: str, content_type: str, expires_seconds: int = 900) -> str:
-        return self.client.generate_presigned_url("put_object", Params={"Bucket": self.bucket, "Key": object_key,
+        return self.presign_client.generate_presigned_url("put_object", Params={"Bucket": self.bucket, "Key": object_key,
             "ContentType": content_type}, ExpiresIn=expires_seconds)
 
     def create_presigned_get_url(self, object_key: str, expires_seconds: int = 900) -> str:
-        return self.client.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": object_key}, ExpiresIn=expires_seconds)
+        return self.presign_client.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": object_key}, ExpiresIn=expires_seconds)
 
     def put_object(self, object_key: str, data: bytes | BinaryIO, content_type: str) -> None:
         self.client.put_object(Bucket=self.bucket, Key=object_key, Body=data, ContentType=content_type)
@@ -60,4 +70,4 @@ class MinioStorageAdapter(ObjectStoragePort):
             raise
 
     def get_public_or_signed_url(self, object_key: str) -> str:
-        return f"{self.public_base_url}/{object_key}" if self.public_base_url else self.create_presigned_get_url(object_key)
+        return self.create_presigned_get_url(object_key)

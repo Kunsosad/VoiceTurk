@@ -1,6 +1,7 @@
 import math
 import os
 import struct
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
@@ -35,10 +36,11 @@ def wav_fixture(duration_ms: int = 1300, amplitude: float = 0.25, sample_rate: i
     return output.getvalue()
 
 
-def make_service(tmp_path: Path, repository=None) -> VoiceTurkService:
+def make_service(tmp_path: Path, repository=None, fast_check=None, fast_timeout: float = 15) -> VoiceTurkService:
     return VoiceTurkService(repository or MemoryRepository(), LocalStorageAdapter(tmp_path / "storage"),
-        RuleBasedFastCheckAdapter(), HeuristicDeepCheckAdapter(), LocalHashProofAdapter(),
-        InProcessJobQueueAdapter(), AgoraRealtimeTokenAdapter("", ""), tmp_path / "exports")
+        fast_check or RuleBasedFastCheckAdapter(), HeuristicDeepCheckAdapter(), LocalHashProofAdapter(),
+        InProcessJobQueueAdapter(), AgoraRealtimeTokenAdapter("", ""), tmp_path / "exports",
+        fast_check_timeout_seconds=fast_timeout)
 
 
 def upload(client: TestClient, session: dict, item_id: str, audio: bytes) -> dict:
@@ -51,7 +53,8 @@ def upload(client: TestClient, session: dict, item_id: str, audio: bytes) -> dic
         "client_metrics": {"duration_ms": 1300, "rms_dbfs": -15}}).json()
 
 
-def test_unified_dual_pipeline(tmp_path: Path):
+def test_unified_dual_pipeline(tmp_path: Path, caplog):
+    caplog.set_level("INFO", logger="voiceturk.pipeline")
     service = make_service(tmp_path)
     app.dependency_overrides[get_service] = lambda: service
     client = TestClient(app)
@@ -62,6 +65,15 @@ def test_unified_dual_pipeline(tmp_path: Path):
                                                                   "contributor_id": "user_001"}).json()
         assert session["realtime"]["provider"] == "browser_tts"
         first, second = session["items"][:2]
+
+        missing_slot = client.post("/audio/uploads/init", json={"session_id": session["session_id"],
+            "item_id": first["item_id"], "filename": "recording.wav", "content_type": "audio/wav",
+            "size_bytes": 1000}).json()
+        assert missing_slot["upload_url"].startswith("/audio/uploads/") and missing_slot["expires_in"] == 900
+        missing = client.post("/audio/uploads/complete", json={"upload_id": missing_slot["upload_id"],
+            "session_id": session["session_id"], "item_id": first["item_id"],
+            "object_key": missing_slot["object_key"], "client_metrics": {}}).json()
+        assert missing["action"] == "RETAKE_NOW" and missing["reason_code"] == "UPLOAD_OBJECT_NOT_FOUND"
 
         short = upload(client, session, first["item_id"], wav_fixture(400))
         assert short["action"] == "RETAKE_NOW" and short["reason_code"] == "AUDIO_TOO_SHORT"
@@ -94,6 +106,11 @@ def test_unified_dual_pipeline(tmp_path: Path):
         verified = client.post("/datasets/verify", json={"dataset_version_id": dataset["dataset_version_id"],
                                                          "manifest_hash": dataset["manifest_hash"]}).json()
         assert verified["result"] == "MATCH"
+        events = "\n".join(caplog.messages)
+        for event in ("upload_init_received", "presigned_url_created", "upload_complete_received",
+                      "fastcheck_started", "fastcheck_finished", "audio_sample_created",
+                      "deepcheck_enqueued", "complete_response_returned"):
+            assert f'"event": "{event}"' in events
     finally:
         app.dependency_overrides.clear()
 
@@ -116,6 +133,64 @@ def test_architecture_boundaries():
         assert not any(f"import {name}" in source or f"from {name}" in source for name in forbidden)
     fast_check_source = (root / "adapters" / "check" / "local.py").read_text(encoding="utf-8").lower()
     assert "llm" not in fast_check_source and "solana" not in (root / "application" / "service.py").read_text(encoding="utf-8").lower()
+
+
+def test_fastcheck_timeout_is_terminal(tmp_path: Path):
+    class SlowFastCheck:
+        def check(self, *_args, **_kwargs):
+            time.sleep(0.2)
+            return RuleBasedFastCheckAdapter().check(*_args, **_kwargs)
+
+    service = make_service(tmp_path, fast_check=SlowFastCheck(), fast_timeout=0.01)
+    seeded = service.seed_demo()
+    session = service.start_session(seeded["campaign_id"], "user_001")
+    item = session["items"][0]
+    slot = service.init_upload({"session_id": session["session_id"], "item_id": item["item_id"],
+        "filename": "recording.wav", "content_type": "audio/wav", "size_bytes": len(wav_fixture())})
+    service.put_upload(slot["upload_id"], wav_fixture(), "audio/wav")
+    result, sample = service.complete_upload({"upload_id": slot["upload_id"], "session_id": session["session_id"],
+        "item_id": item["item_id"], "object_key": slot["object_key"], "client_metrics": {}})
+    assert result["action"] == "RETAKE_NOW" and result["reason_code"] == "FAST_CHECK_TIMEOUT"
+    assert sample is None and not service.repo.list("samples")
+
+
+def test_minio_presigns_with_browser_reachable_endpoint(monkeypatch):
+    from app.adapters.storage import minio as module
+
+    class FakeClient:
+        def __init__(self, endpoint): self.endpoint = endpoint
+        def head_bucket(self, **_kwargs): return {}
+        def generate_presigned_url(self, *_args, **_kwargs): return f"{self.endpoint}/voiceturk-dev/signed"
+
+    monkeypatch.setattr(module.boto3, "client", lambda _service, endpoint_url, **_kwargs: FakeClient(endpoint_url))
+    storage = MinioStorageAdapter("http://minio:9000", "voiceturk-dev", "key", "secret", "us-east-1", False,
+                                   "http://localhost:9000", "development")
+    assert storage.create_presigned_put_url("tmp/audio/test.wav", "audio/wav").startswith("http://localhost:9000/")
+
+
+def test_minio_bucket_creation_is_development_only(monkeypatch):
+    from botocore.exceptions import ClientError
+    from app.adapters.storage import minio as module
+
+    class MissingBucketClient:
+        created = False
+        def head_bucket(self, **_kwargs):
+            raise ClientError({"Error": {"Code": "404", "Message": "missing"}}, "HeadBucket")
+        def create_bucket(self, **_kwargs): self.created = True
+
+    client = MissingBucketClient()
+    monkeypatch.setattr(module.boto3, "client", lambda *_args, **_kwargs: client)
+    MinioStorageAdapter("http://localhost:9000", "voiceturk-dev", "key", "secret", "us-east-1", False,
+                        "http://localhost:9000", "development")
+    assert client.created
+    with pytest.raises(RuntimeError, match="forbids auto-creation"):
+        MinioStorageAdapter("http://localhost:9000", "voiceturk-prod", "key", "secret", "us-east-1", False,
+                            "http://localhost:9000", "production")
+
+
+def test_minio_requires_public_url_for_internal_docker_host():
+    with pytest.raises(RuntimeError, match="S3_PUBLIC_BASE_URL"):
+        MinioStorageAdapter("http://minio:9000", "voiceturk-dev", "key", "secret", "us-east-1", False, "")
 
 
 @pytest.mark.skipif(not os.getenv("S3_ENDPOINT_URL"), reason="MinIO integration environment is not configured")

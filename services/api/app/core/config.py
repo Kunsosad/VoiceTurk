@@ -16,12 +16,13 @@ class Settings(BaseSettings):
     queue_provider: str = "in_process"
     keep_failed_uploads: bool = False
     s3_endpoint_url: str = ""
-    s3_bucket_name: str = "voiceturk"
+    s3_bucket_name: str = "voiceturk-dev"
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
     s3_region: str = "us-east-1"
     s3_public_base_url: str = ""
     s3_secure: bool = False
+    s3_presigned_expire_seconds: int = 900
     agora_app_id: str = ""
     agora_app_certificate: str = ""
     fast_check_min_duration_ms: int = 900
@@ -35,5 +36,6 @@ class Settings(BaseSettings):
     fast_check_leading_silence_max_ms: int = 1200
     fast_check_trailing_silence_max_ms: int = 1800
     fast_check_min_file_size_bytes: int = 1000
+    fast_check_timeout_seconds: float = 15.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
