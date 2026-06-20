@@ -2,14 +2,20 @@ import type { RecordingItem } from '../../types/domain'
 import type { RealtimeCoachClient } from './RealtimeCoachClient'
 
 export class BrowserTTSCoachClient implements RealtimeCoachClient {
-  join = async () => {}
+  joinSession = async () => {}
+  leaveSession = async () => this.stopSpeaking()
   setCurrentTaskContext = (_context: RecordingItem) => {}
-  leave = async () => { window.speechSynthesis?.cancel() }
-  speak = async (message: string) => {
-    if (!('speechSynthesis' in window)) return
-    window.speechSynthesis.cancel()
+  stopSpeaking = () => window.speechSynthesis?.cancel()
+  speak = (message: string) => new Promise<void>(resolve => {
+    if (!('speechSynthesis' in window)) return resolve()
+    this.stopSpeaking()
     const utterance = new SpeechSynthesisUtterance(message)
-    utterance.lang = 'vi-VN'
+    utterance.lang = 'vi-VN'; utterance.onend = () => resolve(); utterance.onerror = () => resolve()
     window.speechSynthesis.speak(utterance)
-  }
+  })
+  onUserSpeechStart = (_callback: () => void) => () => {}
+  onUserSpeechEnd = (_callback: () => void) => () => {}
+  onMicLevel = (_callback: (level: number) => void) => () => {}
+  onMicMuted = (_callback: (muted: boolean) => void) => () => {}
+  onConnectionStateChange = (_callback: (state: string) => void) => () => {}
 }

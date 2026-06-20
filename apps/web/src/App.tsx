@@ -1,122 +1,64 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './features/api'
-import { BrowserMediaRecorder } from './integrations/recorder/BrowserMediaRecorder'
+import { COACH_MESSAGES, PRECHECK, precheck, type PrecheckCode } from './features/recording/precheck'
+import { BrowserMediaRecorder, type RecordingResult } from './integrations/recorder/BrowserMediaRecorder'
 import { createCoach } from './integrations/realtime/createCoach'
 import { apiUrl } from './shared/api/httpClient'
-import type { Campaign, Dataset, Role, Sample, Session } from './types/domain'
+import type { Campaign, Dataset, NextAction, RecordingItem, Sample, Session, StudioStep } from './types/domain'
 import './styles.css'
 
+const steps: StudioStep[] = ['Campaign','Recording','Review & Retake','Dataset Export','Verify']
 const demoLines = [
-  ['Tôi chưa nhận được hàng.', 'delivery_delay', 'Khách hàng đã chờ đơn hàng lâu hơn ngày dự kiến.'],
-  ['Đơn hàng của tôi đang ở đâu?', 'order_status', 'Khách hàng muốn biết trạng thái hiện tại của đơn hàng.'],
-  ['Tôi muốn hoàn tiền cho đơn này.', 'refund_request', 'Khách hàng không hài lòng và muốn hoàn tiền.'],
-  ['Sao đơn hàng giao trễ vậy?', 'delivery_delay', 'Khách hàng khó chịu vì đơn hàng giao muộn.'],
-  ['Tôi cần kiểm tra trạng thái đơn hàng.', 'order_status', 'Khách hàng cần tổng đài kiểm tra đơn giúp mình.'],
+  ['Tôi chưa nhận được hàng.','delivery_delay','Khách hàng đã chờ đơn hàng lâu hơn ngày dự kiến.'],
+  ['Đơn hàng của tôi đang ở đâu?','order_status','Khách hàng muốn biết trạng thái hiện tại của đơn hàng.'],
+  ['Tôi muốn hoàn tiền cho đơn này.','refund_request','Khách hàng không hài lòng và muốn hoàn tiền.'],
+  ['Sao đơn hàng giao trễ vậy?','delivery_delay','Khách hàng khó chịu vì đơn hàng giao muộn.'],
+  ['Tôi cần kiểm tra trạng thái đơn hàng.','order_status','Khách hàng cần tổng đài kiểm tra đơn giúp mình.'],
 ]
 
-function Status({value}: {value: string}) { return <span className={`status ${value.toLowerCase()}`}>{value}</span> }
+const Status = ({value}:{value:string}) => <span className={`status ${value.toLowerCase()}`}>{value}</span>
 
-function BuyerPanel({campaigns, refresh}: {campaigns: Campaign[]; refresh: () => Promise<void>}) {
-  const [selected, setSelected] = useState<string>('')
-  const [coverage, setCoverage] = useState<Record<string, unknown> | null>(null)
-  const [dataset, setDataset] = useState<Dataset | null>(null)
-  const [verify, setVerify] = useState('')
-  const [message, setMessage] = useState('')
-
-  async function act(action: () => Promise<unknown>, success: string) {
-    try { await action(); setMessage(success); await refresh() } catch (error) { setMessage((error as Error).message) }
-  }
-
-  async function create() {
-    await act(() => api.createCampaign({buyer_id: 'buyer_001', name: `E-commerce Prosody Dataset ${campaigns.length + 1}`,
-      domain: 'ecommerce_cskh', target_emotions: ['neutral', 'confused', 'impatient', 'angry'],
-      script_lines: demoLines.map(([transcript, intent, context_brief]) => ({transcript, intent, context_brief}))}), 'Draft campaign created.')
-  }
-
-  return <section>
-    <div className="section-head"><div><p className="eyebrow">BUYER CONSOLE</p><h2>Campaigns and dataset proof</h2></div>
-      <div className="actions"><button onClick={create}>Create demo draft</button><button className="secondary" onClick={() => act(api.seed, 'Seed campaign is ready.')}>Seed active demo</button></div></div>
-    {message && <p className="notice">{message}</p>}
-    <div className="grid">
-      {campaigns.map(campaign => <article className={`card ${selected === campaign.campaign_id ? 'selected' : ''}`} key={campaign.campaign_id} onClick={() => setSelected(campaign.campaign_id)}>
-        <div className="card-top"><h3>{campaign.name}</h3><Status value={campaign.status}/></div>
-        <p>{campaign.domain} · {campaign.item_count} recording items</p><p className="muted">{campaign.target_emotions.join(' · ')}</p>
-        <div className="actions">
-          {campaign.status === 'DRAFT' && <button onClick={e => {e.stopPropagation(); act(() => api.generate(campaign.campaign_id), 'Recording items generated.')}}>Generate items</button>}
-          {campaign.status === 'PREVIEW_READY' && <button onClick={e => {e.stopPropagation(); act(() => api.activate(campaign.campaign_id), 'Campaign activated.')}}>Activate</button>}
-          <button className="secondary" onClick={async e => {e.stopPropagation(); setCoverage(await api.coverage(campaign.campaign_id)); setSelected(campaign.campaign_id)}}>Coverage</button>
-        </div>
-      </article>)}
-    </div>
-    {selected && <div className="split">
-      <article className="card"><h3>Coverage</h3>{coverage ? <><div className="metric">{Math.round(Number(coverage.coverage_ratio) * 100)}%</div><pre>{JSON.stringify(coverage, null, 2)}</pre></> : <p className="muted">Choose Coverage on a campaign.</p>}</article>
-      <article className="card"><h3>Dataset export</h3><p>Exports accepted samples only and issues a local hash proof.</p>
-        <button onClick={async () => {try {setDataset(await api.build(selected)); setVerify('')} catch(e) {setMessage((e as Error).message)}}}>Build version 1.0</button>
-        {dataset && <div className="result"><Status value={dataset.status}/><p>{dataset.sample_count} accepted sample(s)</p><code>{dataset.manifest_hash}</code>
-          <button className="secondary" onClick={async () => setVerify((await api.verify(dataset.dataset_version_id, dataset.manifest_hash)).result)}>Verify manifest</button>{verify && <strong className="match">{verify}</strong>}</div>}
-      </article>
-    </div>}
-  </section>
+function CampaignPanel({campaigns,selected,setSelected,refresh}:{campaigns:Campaign[];selected:string;setSelected:(id:string)=>void;refresh:()=>Promise<void>}) {
+  const [message,setMessage]=useState('')
+  async function act(action:()=>Promise<unknown>,success:string){try{await action();setMessage(success);await refresh()}catch(error){setMessage((error as Error).message)}}
+  const create=()=>act(()=>api.createCampaign({buyer_id:'user_001',name:`E-commerce Prosody ${campaigns.length+1}`,domain:'ecommerce_cskh',target_emotions:['neutral','confused','impatient','angry'],script_lines:demoLines.map(([transcript,intent,context_brief])=>({transcript,intent,context_brief}))}),'Đã tạo chiến dịch nháp.')
+  return <section><div className="section-head"><div><p className="eyebrow">STEP 1 · CAMPAIGN</p><h2>Set up your recording campaign</h2></div><div className="actions"><button onClick={create}>Create campaign</button><button className="secondary" onClick={()=>act(api.seed,'Unified demo is ready.')}>Seed 20-item demo</button></div></div>{message&&<p className="notice">{message}</p>}<div className="grid">{campaigns.map(c=><article className={`card ${selected===c.campaign_id?'selected':''}`} key={c.campaign_id} onClick={()=>setSelected(c.campaign_id)}><div className="card-top"><h3>{c.name}</h3><Status value={c.status}/></div><p>{c.domain} · {c.item_count} tasks</p><p className="muted">{c.target_emotions.join(' · ')}</p><div className="actions">{c.status==='DRAFT'&&<button onClick={e=>{e.stopPropagation();act(()=>api.generate(c.campaign_id),'Tasks generated.')}}>Generate tasks</button>}{c.status==='PREVIEW_READY'&&<button onClick={e=>{e.stopPropagation();act(()=>api.activate(c.campaign_id),'Campaign activated.')}}>Activate</button>}</div></article>)}</div></section>
 }
 
-function ContributorPanel({campaigns}: {campaigns: Campaign[]}) {
-  const [campaignId, setCampaignId] = useState('')
-  const [session, setSession] = useState<Session | null>(null)
-  const [index, setIndex] = useState(0)
-  const [recording, setRecording] = useState(false)
-  const [blob, setBlob] = useState<Blob | null>(null)
-  const [duration, setDuration] = useState(0)
-  const [message, setMessage] = useState('Select an active campaign to begin.')
-  const recorder = useRef(new BrowserMediaRecorder())
-  const startedAt = useRef(0)
-  const coach = useMemo(createCoach, [])
-  const item = session?.items[index]
+function GuidedRecording({campaignId}:{campaignId:string}) {
+  const [session,setSession]=useState<Session|null>(null); const [item,setItem]=useState<RecordingItem|null>(null)
+  const [machine,setMachine]=useState('IDLE'); const [message,setMessage]=useState('Choose an active campaign and start the studio.')
+  const [level,setLevel]=useState(-100); const [elapsed,setElapsed]=useState(0); const [progress,setProgress]=useState({completed:0,total:0}); const [retakes,setRetakes]=useState(0)
+  const [lastCheck,setLastCheck]=useState<Record<string,unknown>|null>(null); const [micState,setMicState]=useState('not connected')
+  const recorder=useRef(new BrowserMediaRecorder()); const coach=useMemo(createCoach,[]); const captureActive=useRef(false)
+  const noSpeechTimer=useRef<number|undefined>(undefined); const silenceTimer=useRef<number|undefined>(undefined); const clock=useRef<number|undefined>(undefined); const startedAt=useRef(0); const paused=useRef(false)
 
-  useEffect(() => { if (!item) return; coach.setCurrentTaskContext(item); const text = `Hãy đọc câu sau với cảm xúc ${item.target_emotion}: ${item.transcript}`; setMessage(text); coach.speak(text) }, [item, coach])
+  useEffect(()=>()=>{clearTimers();coach.leaveSession().catch(()=>{})},[coach])
+  function clearTimers(){if(noSpeechTimer.current)clearTimeout(noSpeechTimer.current);if(silenceTimer.current)clearTimeout(silenceTimer.current);if(clock.current)clearInterval(clock.current)}
+  async function startSession(){try{const value=await api.startSession(campaignId);setSession(value);setMicState(value.realtime.provider==='agora'?'Agora connecting':'browser microphone');await coach.joinSession({session_id:value.session_id,realtime:value.realtime});setMicState(value.realtime.provider==='agora'?'Agora connected':'browser ready');await loadNext(value.session_id)}catch(error){setMessage((error as Error).message);setMachine('ERROR')}}
+  async function loadNext(sessionId=session?.session_id){if(!sessionId)return;setMachine('PREPARING_TASK');const action=await api.nextAction(sessionId);setProgress(action.progress);setRetakes(action.retake_count);setMessage(action.coach_message_vi)
+    if(action.action==='START_ITEM'||action.action==='RETAKE_ITEM'){setItem(action.item);await prepareTask(action.item!)}
+    else if(action.action==='WAIT_DEEPCHECK'){setMachine('WAIT_DEEPCHECK');await api.runDeepCheck();setTimeout(()=>loadNext(sessionId),500)}
+    else{setItem(null);setMachine('SESSION_SUMMARY');await coach.speak(action.coach_message_vi)}}
+  async function prepareTask(next:RecordingItem){setItem(next);coach.setCurrentTaskContext(next);setMachine('COACH_SPEAKING_INSTRUCTION');const instruction=`Hãy đọc câu sau với cảm xúc ${next.target_emotion}: ${next.transcript}`;setMessage(instruction);await coach.speak(instruction);if(!paused.current)await startCapture()}
+  async function startCapture(){try{setMachine('WAITING_FOR_USER_SPEECH');setElapsed(0);startedAt.current=performance.now();captureActive.current=true;await recorder.current.start({onLevel:setLevel,onMuted:()=>failImmediate('MIC_MUTED'),onSpeechStart:()=>{setMachine('RECORDING');if(noSpeechTimer.current)clearTimeout(noSpeechTimer.current);if(silenceTimer.current)clearTimeout(silenceTimer.current)},onSpeechEnd:()=>{if(silenceTimer.current)clearTimeout(silenceTimer.current);silenceTimer.current=window.setTimeout(()=>stopCapture(),PRECHECK.silenceStopMs)}});clock.current=window.setInterval(()=>setElapsed(Math.round(performance.now()-startedAt.current)),100);noSpeechTimer.current=window.setTimeout(()=>failImmediate('NO_SPEECH_DETECTED'),PRECHECK.noSpeechTimeoutMs)}catch(error){captureActive.current=false;const code=((error as Error&{code?:PrecheckCode}).code??'MIC_TRACK_FAILED') as PrecheckCode;await feedbackAndHold(code)}}
+  async function failImmediate(code:PrecheckCode){if(!captureActive.current)return;const result=await finishRecorder();setLastCheck(result.metrics);await feedbackAndRetry(code)}
+  async function stopCapture(){if(!captureActive.current)return;setMachine('LOCAL_PRECHECK');const result=await finishRecorder();const reason=precheck(result.blob,result.metrics);setLastCheck(result.metrics);if(reason)return feedbackAndRetry(reason);await upload(result)}
+  async function finishRecorder(){captureActive.current=false;clearTimers();return recorder.current.stop()}
+  async function feedbackAndHold(code:PrecheckCode){const text=COACH_MESSAGES[code];setMachine('FASTCHECK_RETAKE_NOW');setMessage(text);await coach.speak(text)}
+  async function feedbackAndRetry(code:PrecheckCode){await feedbackAndHold(code);if(!paused.current)setTimeout(()=>startCapture(),500)}
+  async function upload(result:RecordingResult){if(!session||!item)return;try{setMachine('UPLOADING');const slot=await api.initUpload({session_id:session.session_id,item_id:item.item_id,filename:'recording.wav',content_type:'audio/wav',size_bytes:result.blob.size});await api.putUpload(slot.upload_url,result.blob);setMachine('WAITING_FASTCHECK');const check=await api.completeUpload({...slot,session_id:session.session_id,item_id:item.item_id,client_metrics:result.metrics});setLastCheck(check);setMessage(check.message_vi);if(check.action==='RETAKE_NOW'){setMachine('FASTCHECK_RETAKE_NOW');await coach.speak(check.message_vi);setTimeout(()=>startCapture(),500);return}setMachine('FASTCHECK_CONTINUE_NEXT');api.runDeepCheck().catch(()=>{});setMachine('COACH_SPEAKING_FEEDBACK');await coach.speak(check.message_vi);setMachine('AUTO_ADVANCE_NEXT_TASK');await loadNext(session.session_id)}catch{await feedbackAndRetry('UPLOAD_FAILED')}}
+  async function pause(){paused.current=true;if(captureActive.current){captureActive.current=false;clearTimers();await recorder.current.stop()}setMachine('PAUSED');setMessage('Studio paused. Press Retry when you are ready.')}
+  async function retry(){paused.current=false;coach.stopSpeaking();if(captureActive.current){captureActive.current=false;clearTimers();await recorder.current.stop()}if(item)await prepareTask(item)}
+  async function skip(){if(!item||!session)return;paused.current=true;if(captureActive.current){captureActive.current=false;clearTimers();await recorder.current.stop()}await api.skipItem(item.item_id);paused.current=false;await loadNext(session.session_id)}
+  async function end(){if(!session)return;paused.current=true;if(captureActive.current){captureActive.current=false;clearTimers();await recorder.current.stop()}await api.completeSession(session.session_id);await coach.leaveSession();setMachine('SESSION_SUMMARY');setMessage('Session ended safely. Unfinished tasks remain available later.')}
 
-  async function startSession() {
-    try { const next = await api.startSession(campaignId); setSession(next); setIndex(0); await coach.join({session_id: next.session_id}) } catch(e) {setMessage((e as Error).message)}
-  }
-  async function startRecording() { try {await recorder.current.start(); startedAt.current = Date.now(); setBlob(null); setRecording(true)} catch(e) {setMessage(`Microphone unavailable: ${(e as Error).message}`)} }
-  async function stopRecording() { const audio = await recorder.current.stop(); setDuration(Date.now() - startedAt.current); setBlob(audio); setRecording(false) }
-  async function submit() {
-    if (!item || !session || !blob || duration < 500) { setMessage('Client pre-check: record at least 0.5 seconds before submitting.'); return }
-    const data = new FormData(); data.append('audio', blob, 'recording.webm'); data.append('session_id', session.session_id); data.append('contributor_id', 'contributor_001'); data.append('duration_ms', String(duration))
-    try { const result = await api.submitAudio(item.item_id, data); setMessage(result.message_vi); await coach.speak(result.message_vi); setBlob(null); if (result.action === 'CONTINUE_NEXT') setIndex(value => value + 1) } catch(e) {setMessage((e as Error).message)}
-  }
-  async function complete() { if (!session) return; await api.completeSession(session.session_id); await coach.leave(); setSession(null); setMessage('Session completed. Unrecorded items returned to the open pool.') }
-
-  const active = campaigns.filter(c => c.status === 'ACTIVE')
-  return <section><p className="eyebrow">CONTRIBUTOR STUDIO</p><h2>Guided recording session</h2>
-    {!session && <article className="card start-card"><label>Active campaign<select value={campaignId} onChange={e => setCampaignId(e.target.value)}><option value="">Select…</option>{active.map(c => <option key={c.campaign_id} value={c.campaign_id}>{c.name}</option>)}</select></label><button disabled={!campaignId} onClick={startSession}>Start session</button></article>}
-    {session && item && <div className="studio"><div className="progress">Item {index + 1} of {session.items.length}<span style={{width: `${((index + 1) / session.items.length) * 100}%`}}/></div>
-      <article className="prompt"><p className="eyebrow">{item.intent} · {item.target_emotion}</p><h3>{item.transcript}</h3><p>{item.context_brief}</p></article>
-      <div className="coach"><strong>Voice Coach</strong><p>{message}</p><button className="ghost" onClick={() => coach.speak(message)}>Speak again</button></div>
-      <div className="recorder"><div className={`mic ${recording ? 'live' : ''}`}>●</div><p>{recording ? 'Recording…' : blob ? `Ready · ${(duration / 1000).toFixed(1)}s` : 'Ready to record'}</p>
-        <div className="actions">{!recording ? <button onClick={startRecording}>Start recording</button> : <button className="danger" onClick={stopRecording}>Stop</button>}<button className="secondary" disabled={!blob} onClick={submit}>Submit audio</button></div></div>
-      <button className="ghost" onClick={complete}>Complete session now</button></div>}
-    {session && !item && <article className="card"><h3>All assigned items submitted</h3><p>DeepCheck and validation continue in the background.</p><button onClick={complete}>Complete session</button></article>}
-    {!session && <p className="notice">{message}</p>}
-  </section>
+  if(!session)return <section><p className="eyebrow">STEP 2 · GUIDED RECORDING</p><h2>Coach-led recording studio</h2><article className="card start-card"><div><h3>Unified operator: user_001</h3><p>The coach automatically instructs, listens, checks, uploads, and advances.</p></div><button disabled={!campaignId} onClick={startSession}>Start Session</button></article>{!campaignId&&<p className="notice">Select an active campaign in Campaign first.</p>}</section>
+  return <section><div className="section-head"><div><p className="eyebrow">STEP 2 · GUIDED RECORDING</p><h2>Coach-led recording studio</h2></div><Status value={machine}/></div><div className="studio-layout"><div className="studio-main"><div className="progress">{progress.completed} of {progress.total} submitted<span style={{width:`${progress.total?progress.completed/progress.total*100:0}%`}}/></div>{item?<article className="prompt"><p className="eyebrow">{item.intent} · {item.target_emotion}</p><h3>{item.transcript}</h3><p>{item.context_brief}</p></article>:<article className="empty"><h3>{machine==='SESSION_SUMMARY'?'Session summary':'Waiting for backend'}</h3><p>{message}</p></article>}<div className="coach"><strong>AI Voice Coach</strong><p>{message}</p></div><div className="recorder"><div className={`mic ${captureActive.current?'live':''}`}>●</div><div className="meter"><span style={{width:`${Math.max(0,Math.min(100,(level+60)/60*100))}%`}}/></div><p>{(elapsed/1000).toFixed(1)}s · {level.toFixed(1)} dBFS</p></div><div className="actions"><button className="secondary" onClick={pause}>Pause</button><button onClick={retry}>Retry</button><button className="secondary" onClick={skip}>Skip for now</button><button className="danger" onClick={end}>End session</button></div></div><aside className="telemetry"><h3>Live pipeline</h3><dl><dt>Microphone</dt><dd>{micState}</dd><dt>Backend state</dt><dd>{machine}</dd><dt>Retake queue</dt><dd>{retakes}</dd></dl>{lastCheck&&<><h3>Last quality result</h3><pre>{JSON.stringify(lastCheck,null,2)}</pre></>}</aside></div></section>
 }
 
-function ValidatorPanel() {
-  const [samples, setSamples] = useState<Sample[]>([])
-  const [message, setMessage] = useState('')
-  const refresh = async () => setSamples(await api.queue())
-  useEffect(() => { refresh().catch(e => setMessage(e.message)) }, [])
-  async function decide(id: string, decision: string) { try {await api.review(id, decision); setMessage(`${decision} saved by backend.`); await refresh()} catch(e) {setMessage((e as Error).message)} }
-  return <section><div className="section-head"><div><p className="eyebrow">VALIDATOR QUEUE</p><h2>Human quality review</h2></div><button className="secondary" onClick={refresh}>Refresh queue</button></div>{message && <p className="notice">{message}</p>}
-    {!samples.length && <article className="empty"><h3>No samples waiting</h3><p>Submit a contributor recording, then refresh.</p></article>}
-    <div className="grid">{samples.map(sample => <article className="card" key={sample.sample_id}><div className="card-top"><Status value={sample.status}/><strong>{Math.round((sample.quality_score ?? 0) * 100)} quality</strong></div><h3>{sample.transcript_snapshot}</h3><p>{sample.context_brief}</p><p className="muted">Target: {sample.target_emotion_snapshot}</p><audio controls src={apiUrl(sample.audio_url)}/><div className="actions"><button onClick={() => decide(sample.sample_id, 'ACCEPT')}>Accept</button><button className="secondary" onClick={() => decide(sample.sample_id, 'NEED_RETAKE')}>Need retake</button><button className="danger" onClick={() => decide(sample.sample_id, 'REJECT')}>Reject</button></div></article>)}</div>
-  </section>
-}
+function ReviewPanel({campaignId}:{campaignId:string}){const[samples,setSamples]=useState<Sample[]>([]);const[retakes,setRetakes]=useState<RecordingItem[]>([]);const[message,setMessage]=useState('');async function refresh(){await api.runDeepCheck();setSamples(await api.queue());if(campaignId)setRetakes(await api.retakes(campaignId) as RecordingItem[])}useEffect(()=>{refresh().catch(e=>setMessage(e.message))},[campaignId]);async function decide(id:string,decision:string){await api.review(id,decision);setMessage(`${decision} saved with validator_id=user_001.`);await refresh()}return <section><div className="section-head"><div><p className="eyebrow">STEP 3 · REVIEW & RETAKE</p><h2>Self-review your samples</h2></div><button className="secondary" onClick={refresh}>Process & refresh</button></div>{message&&<p className="notice">{message}</p>}{retakes.length>0&&<div className="retake-banner">{retakes.length} task(s) need another recording. Return to Guided Recording to let the coach handle them.</div>}<div className="grid">{samples.map(sample=><article className="card" key={sample.sample_id}><div className="card-top"><Status value={sample.status}/><strong>{Math.round((sample.quality_score??0)*100)} quality</strong></div><h3>{sample.transcript_snapshot}</h3><p>{sample.context_brief}</p><p className="muted">Target: {sample.target_emotion_snapshot}</p><audio controls src={apiUrl(sample.audio_url)}/><div className="quality-grid"><span>FastCheck <b>{sample.fast_check_score}</b></span><span>Loudness <b>{sample.loudness_db} dBFS</b></span><span>Silence <b>{sample.silence_ratio}</b></span><span>Rate <b>{sample.speech_rate_wps} wps</b></span></div><p className="ai-note">{sample.deep_check_message_vi}</p><div className="actions"><button onClick={()=>decide(sample.sample_id,'ACCEPT')}>Accept</button><button className="secondary" onClick={()=>decide(sample.sample_id,'NEED_RETAKE')}>Need retake</button><button className="danger" onClick={()=>decide(sample.sample_id,'REJECT')}>Reject</button></div></article>)}</div>{!samples.length&&<article className="empty"><h3>No samples waiting</h3><p>DeepCheck may still be processing, or everything has been reviewed.</p></article>}</section>}
 
-export default function App() {
-  const [role, setRole] = useState<Role>('Buyer')
-  const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [online, setOnline] = useState(false)
-  const refresh = async () => setCampaigns(await api.campaigns())
-  useEffect(() => { api.health().then(() => setOnline(true)).catch(() => setOnline(false)); refresh().catch(() => {}) }, [])
-  return <><header><div className="brand"><span>VT</span><div><strong>VoiceTurk</strong><small>Vietnamese prosody studio</small></div></div><nav>{(['Buyer','Contributor','Validator'] as Role[]).map(value => <button className={role === value ? 'active' : ''} onClick={() => setRole(value)} key={value}>{value}</button>)}</nav><div className={`api-state ${online ? 'online' : ''}`}>● API {online ? 'online' : 'offline'}</div></header><main>{role === 'Buyer' && <BuyerPanel campaigns={campaigns} refresh={refresh}/>} {role === 'Contributor' && <ContributorPanel campaigns={campaigns}/>} {role === 'Validator' && <ValidatorPanel/>}</main><footer>Local-first MVP · Browser TTS · Local storage · Local hash proof</footer></>
-}
+function DatasetPanel({campaignId,verifyOnly=false}:{campaignId:string;verifyOnly?:boolean}){const[coverage,setCoverage]=useState<Record<string,unknown>|null>(null);const[dataset,setDataset]=useState<Dataset|null>(()=>{try{return JSON.parse(sessionStorage.getItem('voiceturk.dataset')||'null')}catch{return null}});const[result,setResult]=useState('');const[message,setMessage]=useState('');useEffect(()=>{if(campaignId)api.coverage(campaignId).then(setCoverage).catch(()=>{})},[campaignId]);if(verifyOnly)return <section><p className="eyebrow">STEP 5 · VERIFY</p><h2>Verify dataset integrity</h2><article className="card">{dataset?<div className="result"><p>Dataset {dataset.dataset_version_id}</p><code>{dataset.manifest_hash}</code><button onClick={async()=>setResult((await api.verify(dataset.dataset_version_id,dataset.manifest_hash)).result)}>Verify manifest</button>{result&&<strong className="match">{result}</strong>}</div>:<p>Build a dataset first. Verification returns MATCH only for the backend-owned manifest hash.</p>}</article></section>;async function build(){try{const value=await api.build(campaignId);setDataset(value);sessionStorage.setItem('voiceturk.dataset',JSON.stringify(value));setMessage('Dataset built from ACCEPTED samples only.')}catch(e){setMessage((e as Error).message)}}return <section><p className="eyebrow">STEP 4 · DATASET EXPORT & VERIFY</p><h2>Package accepted voice data</h2>{message&&<p className="notice">{message}</p>}<div className="split"><article className="card"><h3>Coverage</h3><div className="metric">{coverage?Math.round(Number(coverage.coverage_ratio)*100):0}%</div><pre>{JSON.stringify(coverage,null,2)}</pre></article><article className="card"><h3>Dataset version 1.0</h3><button disabled={!campaignId} onClick={build}>Build dataset</button>{dataset&&<div className="result"><Status value={dataset.status}/><p>{dataset.sample_count} accepted sample(s)</p><code>{dataset.manifest_hash}</code><button className="secondary" onClick={async()=>setResult((await api.verify(dataset.dataset_version_id,dataset.manifest_hash)).result)}>Verify manifest</button>{result&&<strong className="match">{result}</strong>}</div>}</article></div></section>}
+
+export default function App(){const[step,setStep]=useState<StudioStep>('Campaign');const[campaigns,setCampaigns]=useState<Campaign[]>([]);const[selected,setSelected]=useState('');const[online,setOnline]=useState(false);const refresh=async()=>{const values=await api.campaigns();setCampaigns(values);if(!selected){const active=values.find(value=>value.status==='ACTIVE');if(active)setSelected(active.campaign_id)}};useEffect(()=>{api.health().then(()=>setOnline(true)).catch(()=>setOnline(false));refresh().catch(()=>{})},[]);return <><header><div className="brand"><span>VT</span><div><strong>VoiceTurk Studio</strong><small>Unified operator · user_001</small></div></div><div className={`api-state ${online?'online':''}`}>● API {online?'online':'offline'}</div></header><nav className="workflow">{steps.map((value,index)=><button className={step===value?'active':''} onClick={()=>setStep(value)} key={value}><span>{index+1}</span>{value}</button>)}</nav><main>{step==='Campaign'&&<CampaignPanel campaigns={campaigns} selected={selected} setSelected={setSelected} refresh={refresh}/>} {step==='Recording'&&<GuidedRecording campaignId={selected}/>} {step==='Review & Retake'&&<ReviewPanel campaignId={selected}/>} {step==='Dataset Export'&&<DatasetPanel campaignId={selected}/>} {step==='Verify'&&<DatasetPanel campaignId={selected} verifyOnly/>}</main><footer>Backend truth · Agora optional · Browser TTS fallback · MinIO/local storage · deterministic FastCheck</footer></>}

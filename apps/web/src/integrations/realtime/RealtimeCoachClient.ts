@@ -1,8 +1,15 @@
-import type { RecordingItem } from '../../types/domain'
+import type { RecordingItem, RealtimeInfo } from '../../types/domain'
 
+export type Unsubscribe = () => void
 export interface RealtimeCoachClient {
-  join(input: {session_id: string}): Promise<void>
-  speak(message: string): Promise<void>
+  joinSession(input: {session_id: string; realtime: RealtimeInfo}): Promise<void>
+  leaveSession(): Promise<void>
   setCurrentTaskContext(context: RecordingItem): void
-  leave(): Promise<void>
+  speak(message: string): Promise<void>
+  stopSpeaking(): void
+  onUserSpeechStart(callback: () => void): Unsubscribe
+  onUserSpeechEnd(callback: () => void): Unsubscribe
+  onMicLevel(callback: (level: number) => void): Unsubscribe
+  onMicMuted(callback: (muted: boolean) => void): Unsubscribe
+  onConnectionStateChange(callback: (state: string) => void): Unsubscribe
 }

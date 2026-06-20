@@ -1,7 +1,10 @@
-export type Role = 'Buyer' | 'Contributor' | 'Validator'
+export type StudioStep = 'Campaign' | 'Recording' | 'Review & Retake' | 'Dataset Export' | 'Verify'
 export type Campaign = { campaign_id: string; name: string; domain: string; status: string; target_emotions: string[]; item_count: number }
 export type RecordingItem = { item_id: string; transcript: string; intent: string; target_emotion: string; context_brief: string; status: string }
-export type Session = { session_id: string; items: RecordingItem[] }
-export type Sample = { sample_id: string; transcript_snapshot: string; target_emotion_snapshot: string; context_brief: string; quality_score: number; audio_url: string; status: string }
-export type Dataset = { dataset_version_id: string; version: string; sample_count: number; manifest_hash: string; status: string }
-
+export type RealtimeInfo = {provider: 'agora' | 'browser_tts'; agora_channel: string | null; agora_token: string | null; agora_app_id: string | null; uid: string}
+export type Session = { session_id: string; campaign_id: string; items: RecordingItem[]; realtime: RealtimeInfo }
+export type NextAction = {action: 'START_ITEM'|'RETAKE_ITEM'|'SESSION_COMPLETE'|'WAIT_DEEPCHECK'|'ERROR'; item: RecordingItem | null; coach_message_vi: string; retake_count: number; progress: {completed: number; total: number}}
+export type AudioMetrics = {duration_ms: number; rms_dbfs: number; peak_dbfs: number; silence_ratio: number; clipping_ratio: number}
+export type FastCheckResponse = {action: 'RETAKE_NOW'|'CONTINUE_NEXT'; reason_code: string; severity: string; message_vi: string; metrics: Record<string, number>; warnings: string[]; sample_id: string | null}
+export type Sample = {sample_id: string; transcript_snapshot: string; target_emotion_snapshot: string; context_brief: string; quality_score: number; audio_url: string; status: string; deep_check_status: string; deep_check_reason_code?: string; deep_check_message_vi?: string; loudness_db?: number; silence_ratio?: number; speech_rate_wps?: number; pitch_summary?: string; fast_check_score?: number}
+export type Dataset = {dataset_version_id: string; campaign_id: string; version: string; sample_count: number; manifest_hash: string; status: string}

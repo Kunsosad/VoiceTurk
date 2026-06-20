@@ -1,9 +1,5 @@
-import type { RecordingItem } from '../../types/domain'
-import type { RealtimeCoachClient } from './RealtimeCoachClient'
+import { BrowserTTSCoachClient } from './BrowserTTSCoachClient'
 
-export class MockRealtimeCoachClient implements RealtimeCoachClient {
-  join = async () => {}
+export class MockRealtimeCoachClient extends BrowserTTSCoachClient {
   speak = async (_message: string) => {}
-  setCurrentTaskContext = (_context: RecordingItem) => {}
-  leave = async () => {}
 }
