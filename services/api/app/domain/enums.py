@@ -1,0 +1,64 @@
+from enum import StrEnum
+
+
+class UserRole(StrEnum):
+    BUYER = "BUYER"
+    CONTRIBUTOR = "CONTRIBUTOR"
+    VALIDATOR = "VALIDATOR"
+    ADMIN = "ADMIN"
+
+
+class CampaignStatus(StrEnum):
+    DRAFT = "DRAFT"
+    PREVIEW_READY = "PREVIEW_READY"
+    ACTIVE = "ACTIVE"
+    COLLECTION_COMPLETED = "COLLECTION_COMPLETED"
+    DATASET_READY = "DATASET_READY"
+    ARCHIVED = "ARCHIVED"
+    CANCELLED = "CANCELLED"
+
+
+class ScriptLineStatus(StrEnum):
+    DRAFT = "DRAFT"
+    APPROVED = "APPROVED"
+    DISABLED = "DISABLED"
+
+
+class RecordingItemStatus(StrEnum):
+    OPEN = "OPEN"
+    ASSIGNED = "ASSIGNED"
+    REVIEW_PENDING = "REVIEW_PENDING"
+    ACCEPTED = "ACCEPTED"
+    NEED_RETAKE = "NEED_RETAKE"
+    DISABLED = "DISABLED"
+
+
+class RecordingSessionStatus(StrEnum):
+    STARTED = "STARTED"
+    ACTIVE = "ACTIVE"
+    COMPLETED = "COMPLETED"
+    ABANDONED = "ABANDONED"
+    EXPIRED = "EXPIRED"
+
+
+class AudioSampleStatus(StrEnum):
+    CHECKING = "CHECKING"
+    REVIEW_PENDING = "REVIEW_PENDING"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    NEED_RETAKE = "NEED_RETAKE"
+
+
+class DatasetVersionStatus(StrEnum):
+    BUILDING = "BUILDING"
+    READY = "READY"
+    PROOF_PENDING = "PROOF_PENDING"
+    VERIFIED = "VERIFIED"
+    FAILED = "FAILED"
+
+
+class ValidatorDecision(StrEnum):
+    ACCEPT = "ACCEPT"
+    REJECT = "REJECT"
+    NEED_RETAKE = "NEED_RETAKE"
+
