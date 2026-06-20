@@ -1,11 +1,13 @@
 ﻿{
 "session_id": "session_001",
 "campaign_id": "camp_001",
-"contributor_id": "contributor_001",
+"contributor_id": "user_001",
 "realtime": {
 "provider": "browser_tts",
 "agora_channel": null,
 "agora_token": null
+,"agora_app_id": null,
+"uid": "user_001"
 },
 "items": [
 {

@@ -1,7 +1,10 @@
 ﻿{
 "action": "RETAKE_NOW",
 "reason_code": "AUDIO_TOO_SHORT",
+"severity": "hard_fail",
 "message_vi": "Audio hơi ngắn, bạn đọc lại câu này rõ hơn nhé.",
 "retry_same_item": true,
+"metrics": {"duration_ms": 420},
+"warnings": [],
 "sample_id": null
 }

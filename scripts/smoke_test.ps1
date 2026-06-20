@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 Push-Location "$PSScriptRoot\..\services\api"
 try {
     $env:PYTHONDONTWRITEBYTECODE = '1'
-    python -m pytest -q -p no:cacheprovider
+    python -m pytest -q -p no:cacheprovider --basetemp C:\tmp\voiceturk-tests
 } finally {
     Pop-Location
 }

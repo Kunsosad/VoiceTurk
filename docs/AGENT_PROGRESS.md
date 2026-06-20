@@ -72,3 +72,52 @@
 - Business persistence is in memory and resets with the API process.
 - Acoustic metadata is mocked and FastCheck does not decode audio frames.
 - Agora, Solana, S3/MinIO, ASR, LLM, Redis, and authentication remain unconnected by design.
+
+## Unified User + Agora + MinIO + Dual-Pipeline Hardening
+
+### Phase A/B — Audit and Unified Operator
+
+- Re-read project rules, contracts, all repository skills, backend, and frontend before editing.
+- Replaced the Buyer/Contributor/Validator role switch with one five-step VoiceTurk Studio workflow.
+- Seed now creates `user_001`; backend retains distinct buyer/contributor/validator audit fields with the same user ID.
+
+### Phase C/D — Persistence, Object Storage, and Upload Lifecycle
+
+- Added durable SQLite repository adapter without adding a domain entity.
+- Expanded ObjectStoragePort and implemented local and S3-compatible MinIO adapters.
+- Added upload init, local PUT/presigned MinIO PUT, completion, temporary-object FastCheck, and official-object promotion.
+- Preserved the backward-compatible multipart submit endpoint through the same application flow.
+
+### Phase E/F — Client Pre-check and Agora
+
+- Browser recorder now captures analyzable 16-bit PCM WAV and reports live dBFS/speech events.
+- Added client checks/messages for permission/device/track/mute/no speech/blob/duration/volume/silence/clipping/upload failures.
+- Added Agora RTC SDK adapter with channel join, microphone publication, level/speech/mute/connection callbacks, and Browser TTS coach composition.
+- Added backend Agora token adapter and endpoint; missing/failed Agora falls back to Browser TTS/text without changing business state.
+
+### Phase G/H — FastCheck v2 and DeepCheck Queue
+
+- FastCheck now decodes PCM and calculates duration, rate/channels, RMS/peak, clipping, speech/silence, leading/trailing silence, SNR, file size/container, warnings, and score.
+- Added an in-process idempotent queue, pending recovery, one-sample processing, status, and retry APIs.
+- Heuristic DeepCheck deterministically maps to REVIEW_PENDING, NEED_RETAKE, or REJECTED and stores feedback/metadata on AudioSample.
+
+### Phase I/J/K — Retakes, Self-review, and Automatic Progression
+
+- Added campaign/session retake queues, start-retake, skip, and backend next-action APIs.
+- Unified self-review shows FastCheck and DeepCheck metrics while saving `validator_id=user_001`.
+- Coach-led state machine speaks instructions, starts listening, auto-stops after silence, retries failures, and auto-advances only after backend CONTINUE_NEXT.
+
+### Phase L — Contracts, Infrastructure, and Verification
+
+- Updated contracts/examples, environment template, README, smoke script, and optional MinIO Docker Compose.
+- Backend tests: 3 passed, 1 MinIO integration test skipped without environment.
+- Frontend typecheck and production build passed.
+- Architecture boundary test passed; no external SDK imports in domain/application and no LLM in FastCheck.
+
+### Known limitations
+
+- DeepCheck emotion/prosody scoring is heuristic.
+- Local queue is single-process; CHECKING samples are recovered after restart when pending processing runs.
+- Agora and MinIO require external credentials/services and default tests do not contact them.
+- Agora currently uses Browser TTS for coach speech; Conversational AI Agent lifecycle is not implemented.
+- PCM WAV is the supported decoded format; the bundled Agora SDK increases the initial frontend chunk size.
