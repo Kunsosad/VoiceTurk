@@ -6,6 +6,17 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$envFile = Join-Path $PSScriptRoot '..\.env'
+if (Test-Path $envFile) {
+    $values = @{}
+    foreach ($line in Get-Content -LiteralPath $envFile) {
+        if ($line -match '^\s*([^#][^=]*)=(.*)$') { $values[$Matches[1].Trim()] = $Matches[2].Trim().Trim('"').Trim("'") }
+    }
+    if (-not $PSBoundParameters.ContainsKey('Endpoint') -and $values['S3_PUBLIC_BASE_URL']) { $Endpoint = $values['S3_PUBLIC_BASE_URL'] }
+    if (-not $PSBoundParameters.ContainsKey('Bucket') -and $values['S3_BUCKET_NAME']) { $Bucket = $values['S3_BUCKET_NAME'] }
+    if (-not $PSBoundParameters.ContainsKey('AccessKey') -and $values['S3_ACCESS_KEY_ID']) { $AccessKey = $values['S3_ACCESS_KEY_ID'] }
+    if (-not $PSBoundParameters.ContainsKey('SecretKey') -and $values['S3_SECRET_ACCESS_KEY']) { $SecretKey = $values['S3_SECRET_ACCESS_KEY'] }
+}
 if (-not (Get-Command mc -ErrorAction SilentlyContinue)) {
     throw 'MinIO client `mc` is required. Install it from https://min.io/docs/minio/windows/reference/minio-mc.html'
 }

@@ -139,3 +139,21 @@
 - Backend: 7 passed, 1 MinIO live integration skipped without environment.
 - Frontend typecheck passed after timeout/instrumentation changes.
 - Frontend production build and complete smoke script passed; only the known Agora bundle-size warning remains.
+
+## MinIO Diagnostics and Recording-Termination Guard
+
+- Fixed environment discovery so the API loads the repository-root `.env` even when Uvicorn starts from `services/api`; service-local overrides remain supported.
+- Added sanitized S3/MinIO diagnostics, a development-only health API, and a browser PUT/verify probe in Studio.
+- Added direct, presigned, CORS, and API upload smoke tools. The live `voiceturk` bucket passed direct PUT, presigned PUT/GET, browser-origin preflight, object verification, FastCheck, and next-action checks.
+- Guarded next-action from completing while recordable or submitted work remains and added development decision counts/reasons.
+- Expanded timing/event logs from session start and recording through upload, FastCheck, next-action, and explicit completion.
+
+### Verification
+
+- Backend: 8 passed, 1 credential-gated MinIO integration test skipped.
+- Frontend production build passed; the known Agora bundle-size warning remains.
+- Live diagnostic and API storage smoke passed against `127.0.0.1:9000`.
+
+### Remaining manual check
+
+- Click Studio's development Storage Probe to confirm the user's browser route. The equivalent signed PUT and localhost:5173 CORS preflight already pass on this machine.

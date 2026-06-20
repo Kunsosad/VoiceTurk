@@ -260,3 +260,9 @@ FastCheck responses include `action`, `reason_code`, `severity`, `retry_same_ite
 Upload completion returns `UPLOAD_OBJECT_NOT_FOUND` when the initialized temporary object is absent and `FAST_CHECK_TIMEOUT` when deterministic checking exceeds its configured deadline. Both are terminal `RETAKE_NOW` responses and create no AudioSample.
 
 Frontend deadlines are 10 seconds for upload init and next-action, 30 seconds for presigned PUT, and 20 seconds for upload complete. Timeout/error leaves the same item assigned and exposes a Retry action.
+
+`GET /debug/storage/health` is development-only and returns sanitized provider endpoint/public URL/bucket/region plus bucket, put, and presigning checks. It never exposes credentials.
+
+`POST /debug/storage/uploads/init`, `PUT /debug/storage/uploads/{probe_id}/content`, and `POST /debug/storage/uploads/{probe_id}/verify` implement a development-only browser probe. The probe uses the same presigned storage path as recording, verifies metadata, and deletes its diagnostic object.
+
+Next-action responses include a `debug` object with session/campaign IDs, assigned/open/review/retake/accepted counts, submitted sample count for the session, and a reason. An active session cannot return `SESSION_COMPLETE` while assigned or open items remain; it returns `WAITING_FOR_RECORDING` if that invariant is encountered.

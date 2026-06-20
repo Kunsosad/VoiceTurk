@@ -69,9 +69,9 @@ Local storage remains the zero-configuration default. To use MinIO:
 
 ```env
 OBJECT_STORAGE_PROVIDER=minio
-S3_ENDPOINT_URL=http://localhost:9000
-S3_PUBLIC_BASE_URL=http://localhost:9000
-S3_BUCKET_NAME=voiceturk-dev
+S3_ENDPOINT_URL=http://127.0.0.1:9000
+S3_PUBLIC_BASE_URL=http://127.0.0.1:9000
+S3_BUCKET_NAME=voiceturk
 S3_ACCESS_KEY_ID=minioadmin
 S3_SECRET_ACCESS_KEY=minioadmin
 S3_REGION=us-east-1
@@ -81,6 +81,16 @@ S3_PRESIGNED_EXPIRE_SECONDS=900
 
 Start the optional local service with `docker compose up -d minio`. In development the adapter creates a missing bucket; staging/production fail clearly instead. `S3_ENDPOINT_URL` is used by the backend while `S3_PUBLIC_BASE_URL` signs browser-reachable URLs. They may differ when the backend uses `http://minio:9000` but the browser must use `http://localhost:9000`.
 
+Address selection:
+
+- Use `127.0.0.1:9000` when backend and browser run on the same computer.
+- Use the machine’s `192.168.x.x:9000` address for another device on the same LAN.
+- Use a `100.x.x.x:9000` address only when both devices can reach it through Tailscale/VPN.
+- Never leave `S3_PUBLIC_BASE_URL` empty when the browser uploads directly.
+- Use `S3_REGION=us-east-1`. The adapter accepts legacy `auto` by normalizing it and returning a warning.
+
+The repository-root `.env` is the canonical backend configuration even when Uvicorn starts from `services/api`. Real credentials belong only in `.env`; examples use local-only defaults/placeholders.
+
 Configure local CORS after installing MinIO Client (`mc`):
 
 ```powershell
@@ -88,6 +98,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\configure_minio_cors.ps1
 ```
 
 This permits the localhost/127.0.0.1 frontend origins on ports 3000 and 5173, upload/read methods and preflight, all request headers, and exposes ETag/content headers. Local uploads use the same init/complete application flow via a backend PUT endpoint.
+
+Run backend-side MinIO diagnostics:
+
+```powershell
+python scripts/check_minio_connection.py
+```
+
+It masks credentials, checks connection/auth/bucket, performs direct and presigned uploads, validates CORS preflight, verifies objects, and cleans up. With the API running, `GET /debug/storage/health` exposes the same development-only readiness without secrets. In the Campaign tab, **Run storage probe** executes a real browser PUT to distinguish browser routing/CORS from backend connectivity.
+
+Run the complete API-to-MinIO recording upload smoke test:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke_storage_upload.ps1
+```
 
 ## Recording stuck after pre-check
 
