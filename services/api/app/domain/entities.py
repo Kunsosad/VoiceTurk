@@ -98,8 +98,23 @@ class AudioSample(Entity):
     silence_ratio: float | None = None
     pitch_summary: str | None = None
     quality_score: float | None = None
+    sample_rate: int | None = None
+    channels: int | None = None
+    peak_dbfs: float | None = None
+    clipping_ratio: float | None = None
+    speech_ratio: float | None = None
+    speech_duration_ms: int | None = None
+    leading_silence_ms: int | None = None
+    trailing_silence_ms: int | None = None
+    estimated_snr_db: float | None = None
+    file_size_bytes: int | None = None
+    audio_container: str | None = None
+    fast_check_score: float | None = None
     fast_check_status: str = "PASSED"
     deep_check_status: str = "PENDING"
+    deep_check_reason_code: str | None = None
+    deep_check_message_vi: str | None = None
+    deep_checked_at: datetime | None = None
     validator_status: str | None = None
     validator_id: str | None = None
     validator_notes: str | None = None
@@ -127,4 +142,3 @@ class DatasetVersion(Entity):
     proof_status: str | None = None
     status: DatasetVersionStatus = DatasetVersionStatus.BUILDING
     created_at: datetime = field(default_factory=now)
-

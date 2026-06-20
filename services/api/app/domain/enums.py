@@ -2,6 +2,7 @@ from enum import StrEnum
 
 
 class UserRole(StrEnum):
+    USER = "USER"
     BUYER = "BUYER"
     CONTRIBUTOR = "CONTRIBUTOR"
     VALIDATOR = "VALIDATOR"
@@ -62,3 +63,8 @@ class ValidatorDecision(StrEnum):
     REJECT = "REJECT"
     NEED_RETAKE = "NEED_RETAKE"
 
+
+class DeepCheckDecision(StrEnum):
+    PASS_TO_REVIEW = "PASS_TO_REVIEW"
+    NEED_RETAKE_LATER = "NEED_RETAKE_LATER"
+    REJECT = "REJECT"

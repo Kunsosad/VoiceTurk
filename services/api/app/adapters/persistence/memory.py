@@ -9,7 +9,8 @@ class MemoryRepository(RepositoryPort):
         self._data: dict[str, dict[str, Any]] = defaultdict(dict)
 
     def add(self, kind: str, entity: Any) -> None:
-        entity_id = next(value for key, value in vars(entity).items() if key.endswith("_id"))
+        values = entity if isinstance(entity, dict) else vars(entity)
+        entity_id = next(value for key, value in values.items() if key.endswith("_id"))
         self._data[kind][entity_id] = entity
 
     def get(self, kind: str, entity_id: str) -> Any | None:
@@ -18,3 +19,5 @@ class MemoryRepository(RepositoryPort):
     def list(self, kind: str) -> list[Any]:
         return list(self._data[kind].values())
 
+    def delete(self, kind: str, entity_id: str) -> None:
+        self._data[kind].pop(entity_id, None)

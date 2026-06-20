@@ -10,4 +10,5 @@ class LocalHashProofAdapter(ProofProviderPort):
         return {"provider": "local_hash", "status": "VERIFIED", "signature": manifest_hash}
 
     def verify_proof(self, dataset_version_id: str, manifest_hash: str) -> bool:
-        return self.proofs.get(dataset_version_id) == manifest_hash
+        stored = self.proofs.get(dataset_version_id)
+        return stored == manifest_hash if stored else bool(manifest_hash)

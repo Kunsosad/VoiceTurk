@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -42,3 +42,28 @@ class DatasetVerifyRequest(BaseModel):
     dataset_version_id: str
     manifest_hash: str
 
+
+class UploadInitRequest(BaseModel):
+    session_id: str
+    item_id: str
+    filename: str
+    content_type: str
+    size_bytes: int = Field(ge=0)
+
+
+class UploadCompleteRequest(BaseModel):
+    upload_id: str
+    session_id: str
+    item_id: str
+    object_key: str
+    client_metrics: dict[str, Any] = {}
+
+
+class AgoraTokenRequest(BaseModel):
+    channel: str
+    uid: str
+    role: str = "publisher"
+
+
+class RetakeStartRequest(BaseModel):
+    contributor_id: str = "user_001"

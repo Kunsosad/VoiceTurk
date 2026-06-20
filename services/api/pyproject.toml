@@ -11,6 +11,8 @@ dependencies = [
   "uvicorn[standard]>=0.30,<1",
   "python-multipart>=0.0.9,<1",
   "pydantic-settings>=2.4,<3",
+  "boto3>=1.34,<2",
+  "agora-token-builder>=1.0.0,<2",
 ]
 
 [project.optional-dependencies]
@@ -20,3 +22,5 @@ test = ["httpx>=0.27,<1", "pytest>=8,<9"]
 pythonpath = ["."]
 testpaths = ["tests"]
 
+[tool.setuptools.packages.find]
+include = ["app*"]

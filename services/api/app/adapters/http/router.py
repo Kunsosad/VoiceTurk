@@ -1,7 +1,7 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 
-from app.adapters.http.schemas import CampaignCreate, DatasetBuildRequest, DatasetVerifyRequest, ReviewRequest, SessionStart
+from app.adapters.http.schemas import (AgoraTokenRequest, CampaignCreate, DatasetBuildRequest, DatasetVerifyRequest,
+    RetakeStartRequest, ReviewRequest, SessionStart, UploadCompleteRequest, UploadInitRequest)
 from app.application.service import VoiceTurkService
 from app.composition.container import get_service
 
@@ -15,6 +15,11 @@ def health() -> dict[str, str]:
 
 @router.post("/demo/seed")
 def seed_demo(service: VoiceTurkService = Depends(get_service)):
+    return service.seed_demo()
+
+
+@router.post("/demo/seed-unified-user")
+def seed_unified_user(service: VoiceTurkService = Depends(get_service)):
     return service.seed_demo()
 
 
@@ -58,19 +63,58 @@ def session_items(session_id: str, service: VoiceTurkService = Depends(get_servi
     return service.session_items(session_id)
 
 
+@router.get("/recording-sessions/{session_id}/next-action")
+def next_action(session_id: str, service: VoiceTurkService = Depends(get_service)):
+    return service.next_action(session_id)
+
+
+@router.get("/recording-sessions/{session_id}/retakes")
+def session_retakes(session_id: str, service: VoiceTurkService = Depends(get_service)):
+    return service.session_retakes(session_id)
+
+
+@router.get("/campaigns/{campaign_id}/retakes")
+def campaign_retakes(campaign_id: str, service: VoiceTurkService = Depends(get_service)):
+    return service.campaign_retakes(campaign_id)
+
+
+@router.post("/recording-items/{item_id}/start-retake")
+def start_retake(item_id: str, body: RetakeStartRequest, service: VoiceTurkService = Depends(get_service)):
+    return service.start_retake(item_id, body.contributor_id)
+
+
+@router.post("/recording-items/{item_id}/skip")
+def skip_item(item_id: str, service: VoiceTurkService = Depends(get_service)):
+    return service.skip_item(item_id)
+
+
 @router.post("/recording-sessions/{session_id}/complete")
 def complete_session(session_id: str, service: VoiceTurkService = Depends(get_service)):
     return service.complete_session(session_id)
 
 
 @router.post("/recording-items/{item_id}/submit-audio")
-def submit_audio(item_id: str, background_tasks: BackgroundTasks, audio: UploadFile = File(),
+def submit_audio(item_id: str, audio: UploadFile = File(),
                  session_id: str = Form(), contributor_id: str = Form(), duration_ms: int = Form(),
                  service: VoiceTurkService = Depends(get_service)):
-    response, sample = service.submit_audio(item_id, session_id, contributor_id, duration_ms,
-                                            audio.filename or "audio.webm", audio.content_type, audio.file)
-    if sample:
-        background_tasks.add_task(service.run_deep_check, sample.sample_id)
+    response, _ = service.submit_audio(item_id, session_id, contributor_id, duration_ms,
+                                       audio.filename or "audio.wav", audio.content_type, audio.file)
+    return response
+
+
+@router.post("/audio/uploads/init")
+def init_upload(body: UploadInitRequest, service: VoiceTurkService = Depends(get_service)):
+    return service.init_upload(body.model_dump())
+
+
+@router.put("/audio/uploads/{upload_id}/content")
+async def put_upload(upload_id: str, request: Request, service: VoiceTurkService = Depends(get_service)):
+    return service.put_upload(upload_id, await request.body(), request.headers.get("content-type"))
+
+
+@router.post("/audio/uploads/complete")
+def complete_upload(body: UploadCompleteRequest, service: VoiceTurkService = Depends(get_service)):
+    response, _ = service.complete_upload(body.model_dump())
     return response
 
 
@@ -84,14 +128,40 @@ def sample_detail(sample_id: str, service: VoiceTurkService = Depends(get_servic
     return service.sample_detail(sample_id)
 
 
+@router.get("/audio-samples/{sample_id}/checks")
+def sample_checks(sample_id: str, service: VoiceTurkService = Depends(get_service)):
+    return service.sample_checks(sample_id)
+
+
 @router.get("/media/{sample_id}")
 def sample_media(sample_id: str, service: VoiceTurkService = Depends(get_service)):
-    return FileResponse(service.sample_audio_path(sample_id))
+    content, content_type = service.sample_audio(sample_id)
+    return Response(content=content, media_type=content_type)
 
 
 @router.post("/validation/audio-samples/{sample_id}/review")
 def review_sample(sample_id: str, body: ReviewRequest, service: VoiceTurkService = Depends(get_service)):
     return service.review_sample(sample_id, body.decision, body.validator_id, body.validator_notes)
+
+
+@router.post("/deep-check/run-pending")
+def run_pending_deep_checks(service: VoiceTurkService = Depends(get_service)):
+    return service.run_pending_deep_checks()
+
+
+@router.get("/deep-check/status")
+def deep_check_status(service: VoiceTurkService = Depends(get_service)):
+    return service.deep_check_status()
+
+
+@router.post("/audio-samples/{sample_id}/deep-check/retry")
+def retry_deep_check(sample_id: str, service: VoiceTurkService = Depends(get_service)):
+    return service.retry_deep_check(sample_id)
+
+
+@router.post("/realtime/agora/token")
+def agora_token(body: AgoraTokenRequest, service: VoiceTurkService = Depends(get_service)):
+    return service.issue_realtime_token(body.channel, body.uid, body.role)
 
 
 @router.post("/datasets/build", status_code=201)

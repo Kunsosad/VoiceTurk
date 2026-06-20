@@ -14,7 +14,9 @@ class RepositoryPort(ABC):
     @abstractmethod
     def list(self, kind: str) -> list[Any]: ...
 
+    @abstractmethod
+    def delete(self, kind: str, entity_id: str) -> None: ...
+
 
 class UnitOfWorkPort(ABC):
     repository: RepositoryPort
-
