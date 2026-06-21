@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     next_public_api_base_url: str = "http://localhost:8000"
     object_storage_provider: str = "local"
     realtime_provider: str = "browser_tts"
+    allow_coach_fallback: bool = False
     proof_provider: str = "local_hash"
     fast_check_provider: str = "rule_based"
     deep_check_provider: str = "mock"
@@ -36,20 +37,27 @@ class Settings(BaseSettings):
     s3_presigned_expire_seconds: int = 900
     agora_app_id: str = ""
     agora_app_certificate: str = ""
+    agora_customer_id: str = ""
+    agora_customer_secret: str = ""
+    agora_agent_name: str = ""
+    agora_agent_pipeline_id: str = ""
+    agora_agent_rtc_uid_base: int = 900000
+    agora_agent_remote_rtc_uids: str = "*"
+    agora_agent_region: str = ""
+    agora_agent_join_timeout_seconds: float = 10.0
     agora_region: str = "global"
     agora_feature_rtc: bool = False
     agora_feature_rtm: bool = False
     agora_feature_convoai: bool = False
-    agora_agent_uid: str = "123456"
     # pilot_starting_point: research-guided bounds requiring calibration on VoiceTurk pilot audio.
-    fast_check_min_duration_ms: int = 900
-    fast_check_max_duration_ms: int = 15000
-    fast_check_min_rms_dbfs: float = -45.0
+    fast_check_min_duration_ms: int = 600
+    fast_check_max_duration_ms: int = 30000
+    fast_check_min_rms_dbfs: float = -50.0
     fast_check_max_rms_dbfs: float = -8.0
-    fast_check_min_peak_dbfs: float = -35.0
-    fast_check_clipping_ratio_max: float = 0.02
-    fast_check_silence_ratio_max: float = 0.65
-    fast_check_speech_ratio_min: float = 0.30
+    fast_check_min_peak_dbfs: float = -50.0
+    fast_check_clipping_ratio_max: float = 0.03
+    fast_check_silence_ratio_max: float = 0.85
+    fast_check_speech_ratio_min: float = 0.15
     fast_check_leading_silence_max_ms: int = 1200
     fast_check_trailing_silence_max_ms: int = 1800
     fast_check_min_file_size_bytes: int = 1000
@@ -73,6 +81,22 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [origin.strip().rstrip("/") for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
+    @property
+    def agora_agent_remote_uids(self) -> list[str]:
+        return [value.strip() for value in self.agora_agent_remote_rtc_uids.split(",") if value.strip()] or ["*"]
+
+    @property
+    def missing_agora_agent_config(self) -> list[str]:
+        required = {
+            "AGORA_APP_ID": self.agora_app_id,
+            "AGORA_APP_CERTIFICATE": self.agora_app_certificate,
+            "AGORA_CUSTOMER_ID": self.agora_customer_id,
+            "AGORA_CUSTOMER_SECRET": self.agora_customer_secret,
+            "AGORA_AGENT_NAME": self.agora_agent_name,
+            "AGORA_AGENT_PIPELINE_ID": self.agora_agent_pipeline_id,
+        }
+        return [name for name, value in required.items() if not value]
+
     @model_validator(mode="after")
     def validate_environment(self) -> "Settings":
         self.app_env = self.app_env.lower()
@@ -80,8 +104,14 @@ class Settings(BaseSettings):
             raise ValueError("APP_ENV must be development, test, staging, or production")
         if self.password_hash_scheme != "bcrypt":
             raise ValueError("PASSWORD_HASH_SCHEME must be bcrypt")
-        if self.realtime_provider not in {"browser_tts", "agora", "agora_convoai"}:
-            raise ValueError("REALTIME_PROVIDER must be browser_tts, agora, or agora_convoai")
+        if self.realtime_provider not in {"browser_tts", "mock", "agora", "agora_convoai"}:
+            raise ValueError("REALTIME_PROVIDER must be browser_tts, mock, agora, or agora_convoai")
+        if self.realtime_provider == "agora_convoai":
+            self.realtime_provider = "agora"
+        if self.agora_agent_rtc_uid_base < 1 or self.agora_agent_rtc_uid_base >= 4_294_967_294:
+            raise ValueError("AGORA_AGENT_RTC_UID_BASE must be between 1 and 4294967293")
+        if self.agora_agent_join_timeout_seconds <= 0:
+            raise ValueError("AGORA_AGENT_JOIN_TIMEOUT_SECONDS must be positive")
         if self.cookie_samesite not in {"lax", "strict", "none"}:
             raise ValueError("COOKIE_SAMESITE must be lax, strict, or none")
         if self.object_storage_provider == "minio" and not self.s3_public_base_url:

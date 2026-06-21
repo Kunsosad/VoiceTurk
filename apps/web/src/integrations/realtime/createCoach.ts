@@ -1,11 +1,8 @@
 import { AgoraRealtimeCoachClient } from './AgoraRealtimeCoachClient'
-import { BrowserTTSCoachClient } from './BrowserTTSCoachClient'
 import type { RealtimeCoachClient } from './RealtimeCoachClient'
-import type { RealtimeInfo } from '../../types/domain'
 
-export function createCoach(provider?: RealtimeInfo['provider']): RealtimeCoachClient {
-  if (provider === 'browser_tts') return new BrowserTTSCoachClient()
-  if (provider === 'agora' || provider === 'agora_convoai') return new AgoraRealtimeCoachClient()
-  // Provider is selected from backend session data at join time.
+export function createCoach(): RealtimeCoachClient {
+  // Backend session data is the provider source of truth. The hybrid Agora adapter
+  // joins RTC only when the backend supplies Agora credentials and otherwise uses TTS.
   return new AgoraRealtimeCoachClient()
 }

@@ -19,7 +19,6 @@ from app.application.service import VoiceTurkService
 from app.core.config import Settings
 from app.domain.enums import AudioSampleStatus, RecordingItemStatus
 from app.jobs.deep_check_worker import DeepCheckWorker
-from app.ports.providers import CoachVoiceResult
 
 
 def wav_fixture(duration_ms: int = 1300, amplitude: float = 0.25, sample_rate: int = 16000,
@@ -135,73 +134,14 @@ def test_deepcheck_borderline_technical_audio_needs_retake(tmp_path: Path):
 def test_agora_convoai_boundary_reports_unavailable_without_fake_success():
     adapter = AgoraConvoAIUnavailableAdapter()
     assert adapter.configured() is False
-    result = adapter.speak_feedback("session_1", {"decision": "NEED_RETAKE_LATER"})
+    result = adapter.join_agent("session_1", "channel_1", "900001", "token")
     assert result.available is False
-    assert result.status == "fallback"
+    assert result.status == "config_missing"
+    assert result.error_code == "MISSING_AGORA_AGENT_CONFIG"
 
 
-def test_agora_convoai_provider_is_accepted_after_verified_baseline():
-    assert Settings(realtime_provider="agora_convoai").realtime_provider == "agora_convoai"
-
-
-class MockConvoAICoach:
-    def __init__(self, start_available: bool = True):
-        self.start_available = start_available
-        self.calls = []
-
-    def configured(self): return True
-    def start_coach_session(self, session_id, channel, uid, context):
-        self.calls.append(("start", session_id, channel, uid, context))
-        return CoachVoiceResult(self.start_available, "agora_convoai",
-            "starting" if self.start_available else "fallback", coach_session_id="agent_test" if self.start_available else None,
-            agent_uid="123456" if self.start_available else None)
-    def get_coach_status(self, session_id, coach_session_id=None):
-        self.calls.append(("status", session_id, coach_session_id))
-        return CoachVoiceResult(True, "agora_convoai", "ready", coach_session_id=coach_session_id, agent_uid="123456")
-    def speak_instruction(self, session_id, context, coach_session_id=None):
-        self.calls.append(("instruction", session_id, context, coach_session_id))
-        return CoachVoiceResult(True, "agora_convoai", "spoken", coach_session_id=coach_session_id)
-    def speak_feedback(self, session_id, context, coach_session_id=None):
-        self.calls.append(("feedback", session_id, context, coach_session_id))
-        return CoachVoiceResult(True, "agora_convoai", "spoken", coach_session_id=coach_session_id)
-    def stop_coach_session(self, session_id, coach_session_id=None):
-        self.calls.append(("stop", session_id, coach_session_id))
-        return CoachVoiceResult(True, "agora_convoai", "stopped", coach_session_id=coach_session_id)
-
-
-def make_convoai_service(tmp_path: Path, coach) -> VoiceTurkService:
-    return VoiceTurkService(MemoryRepository(), LocalStorageAdapter(tmp_path / "storage"),
-        RuleBasedFastCheckAdapter(), TechnicalDeepCheckAdapter(), LocalHashProofAdapter(),
-        InProcessJobQueueAdapter(), AgoraRealtimeTokenAdapter("a" * 32, "b" * 32), tmp_path / "exports",
-        coach_voice=coach)
-
-
-def test_convoai_session_start_speak_status_stop_without_qc_mutation(tmp_path: Path):
-    coach = MockConvoAICoach()
-    service = make_convoai_service(tmp_path, coach)
-    seeded = service.seed_demo()
-    response = service.start_session(seeded["campaign_id"], "user_001")
-    assert response["realtime"]["provider"] == "agora_convoai"
-    assert response["realtime"]["coach_status"] == "starting"
-    assert response["realtime"]["coach_session_id"] == "agent_test"
-    assert service.coach_status(response["session_id"])["status"] == "ready"
-    feedback = {"decision": "NEED_RETAKE_LATER", "reason_codes": ["TOO_MUCH_SILENCE"]}
-    spoken = service.speak_coach(response["session_id"], "feedback", "Thu lại liền mạch hơn nhé.", feedback)
-    assert spoken["status"] == "spoken"
-    assert next(call for call in coach.calls if call[0] == "feedback")[2]["decision"] == "NEED_RETAKE_LATER"
-    assert not service.repo.list("samples")
-    service.complete_session(response["session_id"])
-    assert any(call[0] == "stop" for call in coach.calls)
-
-
-def test_convoai_start_failure_returns_rtc_browser_tts_fallback(tmp_path: Path):
-    service = make_convoai_service(tmp_path, MockConvoAICoach(start_available=False))
-    seeded = service.seed_demo()
-    response = service.start_session(seeded["campaign_id"], "user_001")
-    assert response["realtime"]["provider"] == "agora_convoai"
-    assert response["realtime"]["coach_status"] == "fallback"
-    assert response["realtime"]["coach_provider"] == "browser_tts_fallback"
-    assert response["realtime"]["agora_token"]
+def test_legacy_agora_convoai_provider_normalizes_to_agora():
+    assert Settings(realtime_provider="agora_convoai").realtime_provider == "agora"
 
 
 def test_agora_rtc_token_is_issued_when_backend_provider_is_configured(tmp_path: Path):
@@ -213,7 +153,7 @@ def test_agora_rtc_token_is_issued_when_backend_provider_is_configured(tmp_path:
     session = service.start_session(seeded["campaign_id"], "user_001")
     assert session["realtime"]["provider"] == "agora"
     assert session["realtime"]["agora_token"]
-    assert session["realtime"]["coach_provider"] == "browser_tts_fallback"
+    assert session["realtime"]["coach_provider"] == "agora_agent_failed"
     assert session["realtime"]["convoai_available"] is False
 
 

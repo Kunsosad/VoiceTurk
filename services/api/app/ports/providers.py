@@ -90,13 +90,17 @@ class CoachVoiceResult:
     provider: str
     status: str
     message: str = ""
-    coach_session_id: str | None = None
-    agent_uid: str | None = None
+    agent_rtc_uid: str | None = None
+    agent_session_id: str | None = None
+    error_code: str | None = None
+    http_status: int | None = None
+    response_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"available": self.available, "provider": self.provider, "status": self.status,
-                "message": self.message, "coach_session_id": self.coach_session_id,
-                "agent_uid": self.agent_uid}
+                "message": self.message, "agent_rtc_uid": self.agent_rtc_uid,
+                "agent_session_id": self.agent_session_id, "error_code": self.error_code,
+                "http_status": self.http_status, "response_summary": self.response_summary}
 
 
 class CoachVoicePort(ABC):
@@ -105,20 +109,9 @@ class CoachVoicePort(ABC):
     @abstractmethod
     def configured(self) -> bool: ...
     @abstractmethod
-    def start_coach_session(self, recording_session_id: str, channel_name: str, contributor_uid: str,
-                            task_context: dict[str, Any]) -> CoachVoiceResult: ...
+    def agent_rtc_uid(self, session_id: str, contributor_rtc_uid: str) -> str: ...
     @abstractmethod
-    def get_coach_status(self, recording_session_id: str,
-                         coach_session_id: str | None = None) -> CoachVoiceResult: ...
-    @abstractmethod
-    def speak_instruction(self, recording_session_id: str, instruction_context: dict[str, Any],
-                          coach_session_id: str | None = None) -> CoachVoiceResult: ...
-    @abstractmethod
-    def speak_feedback(self, recording_session_id: str, feedback_context: dict[str, Any],
-                       coach_session_id: str | None = None) -> CoachVoiceResult: ...
-    @abstractmethod
-    def stop_coach_session(self, recording_session_id: str,
-                           coach_session_id: str | None = None) -> CoachVoiceResult: ...
+    def join_agent(self, session_id: str, channel: str, agent_rtc_uid: str, token: str, contributor_rtc_uid: str | None = None) -> CoachVoiceResult: ...
 
 
 class ProofProviderPort(ABC):

@@ -15,20 +15,28 @@ Set the backend environment:
 
 ```env
 REALTIME_PROVIDER=agora
+ALLOW_COACH_FALLBACK=false
 AGORA_APP_ID=<private value>
 AGORA_APP_CERTIFICATE=<private value>
-AGORA_REGION=global
+AGORA_CUSTOMER_ID=<private value>
+AGORA_CUSTOMER_SECRET=<private value>
+AGORA_AGENT_NAME=<published agent name>
+AGORA_AGENT_PIPELINE_ID=<Studio Agent ID>
+AGORA_AGENT_RTC_UID_BASE=900000
+AGORA_AGENT_REMOTE_RTC_UIDS=*
+AGORA_AGENT_REGION=
+AGORA_AGENT_JOIN_TIMEOUT_SECONDS=10
 AGORA_FEATURE_RTC=true
 AGORA_FEATURE_RTM=true
 AGORA_FEATURE_CONVOAI=true
 ```
 
-The backend creates a per-session RTC publisher token and returns the provider, channel, token, UID, coach provider, and ConvoAI availability. The frontend treats this response as source of truth. It joins the returned channel, creates and publishes a microphone track, subscribes and plays remote audio, and exposes the actual outcome as either:
+The backend creates a per-session RTC channel, separate publisher tokens for contributor and agent UIDs, and calls the Agent Studio `/join` endpoint with Basic Auth. The frontend treats this response as source of truth. It joins the returned channel, publishes its microphone, subscribes and plays remote audio, and exposes the actual outcome as either:
 
 - `Agora RTC · mic published`
 - `browser microphone`
 
-The voice-coach status is shown separately as Agora ConvoAI, Browser TTS, Browser TTS fallback, or text only. An RTC exception cleans up any partial track/channel state and does not block recording.
+The voice-coach status is shown separately as waiting, connected, audio subscribed, or failed. In strict Agora mode, RTC/agent failures do not invoke Browser TTS. Browser TTS is only selected by `REALTIME_PROVIDER=browser_tts|mock` or the explicit escape hatch `ALLOW_COACH_FALLBACK=true`.
 
 ## ConvoAI lifecycle
 
@@ -36,7 +44,7 @@ The official `agent-quickstart-nextjs` source was inspected for lifecycle alignm
 
 CLI `0.2.4` cloned and configured the official Next.js quickstart in a temporary directory. Its dependency install and local doctor passed, the documented `pnpm dev` command was run, and the app returned HTTP 200. Browser interaction has not yet proved that the agent joins and completes a voice roundtrip.
 
-No custom `/join` payload or fake start/status/speak/stop implementation is included. `AgoraConvoAIUnavailableAdapter` is an explicit port boundary that returns `LIFECYCLE_NOT_VERIFIED`/`FALLBACK_REQUIRED`. Setting `REALTIME_PROVIDER=agora_convoai` fails configuration explicitly until lifecycle proof exists; use `REALTIME_PROVIDER=agora` for working RTC with Browser TTS fallback.
+`AgoraAgentStudioAdapter` calls `POST /api/conversational-ai-agent/v2/projects/{appid}/join` from the backend. It sends a unique runtime name derived from `AGORA_AGENT_NAME`, the Studio Agent ID (`pipeline_id`), runtime channel, dedicated agent UID, wildcard remote UID list, and agent RTC token. A successful REST response is only a start acknowledgement; the web client waits up to 10 seconds for the expected remote UID before declaring the agent connected.
 
 Current runtime proof:
 
@@ -48,12 +56,13 @@ Current runtime proof:
 | Backend RTC token generation with local credentials | Pass |
 | Browser RTC join | Implemented; requires manual credentialed browser run |
 | Browser microphone publish | Implemented; requires manual credentialed browser run |
-| ConvoAI agent joins channel | Not verified |
-| Agent speaks feedback | Not verified |
+| Agent Studio REST `/join` contract | Implemented and adapter-tested |
+| Agent joins credentialed local channel | Requires manual credentialed browser run |
+| Agent voice roundtrip | Requires manual credentialed browser run |
 
 ## Feedback ownership and fallback
 
-DeepCheck stores `feedback_context` with measured evidence, backend decision, reason codes, target transcript, and constraints. Retake actions return this context plus a deterministic Vietnamese message. Browser TTS speaks that message when ConvoAI is unavailable. Agora never creates an `AudioSample`, changes quality state, or accepts/rejects a sample; Validator remains the only final accept step.
+DeepCheck stores `feedback_context` with measured evidence, backend decision, reason codes, target transcript, and constraints. Browser TTS may speak that message only in browser/mock mode or when fallback is explicitly enabled. Agora never creates an `AudioSample`, changes quality state, or accepts/rejects a sample; Validator remains the only final accept step.
 
 ## Manual RTC verification
 
@@ -61,16 +70,20 @@ DeepCheck stores `feedback_context` with measured evidence, backend decision, re
 2. Start the web app and open Recording Studio.
 3. Start a session and allow microphone permission.
 4. Confirm the timeline reports `agora_rtc · joined=true · mic=true` and the UI shows `Agora RTC · mic published`.
-5. Confirm voice-coach status is `Browser TTS fallback` while ConvoAI remains unavailable.
-6. Disconnect or invalidate RTC configuration and confirm recording still works with Browser TTS/text fallback.
+5. Confirm backend logs `agora.agent.join.request` then `agora.agent.join.success` without tokens or secrets.
+6. Confirm the client log shows the expected agent UID in `remote user joined` and `remote audio subscribed`.
+7. Confirm the UI shows `Agora Agent Studio connected`, then speak and hear the published agent reply.
+8. Invalidate the agent pipeline/name and confirm the session still starts but reports `Agora Agent Studio failed` with the real error and no Browser TTS speech.
 
-## Official ConvoAI baseline verification
+## Probe workflow
 
-The remaining baseline gates are interactive:
+1. Run `python services/api/scripts/probe_agora_agent_join.py` to validate config and call `/join` with tokens redacted.
+2. Re-run with `--print-client-token` only for the interactive browser check.
+3. Run `npm --prefix apps/web run dev` and open `http://localhost:5173/agora-agent-probe.html`.
+4. Enter the emitted values, join, speak, and confirm `AGENT_JOINED` plus `AGENT_AUDIO_SUBSCRIBED` within 15 seconds.
 
-1. In the running official quickstart, open `http://localhost:3000`.
-2. Select **Try it now**, grant microphone permission, and start a conversation.
-3. Confirm the agent joins the same RTC channel and its audio is audible.
-4. End the conversation and confirm the agent leaves cleanly.
+The published Studio pipeline currently owns ASR/LLM/TTS configuration. VoiceTurk only starts it and joins RTC; no custom Backend LLM callback endpoint is wired in this repo.
 
-Only after those runtime gates pass should the official start/status/speak/stop lifecycle be mapped into VoiceTurk.
+## Remaining runtime gate
+
+Automated tests mock Agora's REST boundary and cannot prove a credentialed media roundtrip. Run the manual steps above and confirm a new session in Agora Console Session History/Analytics. Explicit agent stop/status APIs are not wired in this slice; session completion still leaves RTC locally and relies on the published agent's configured idle lifecycle.

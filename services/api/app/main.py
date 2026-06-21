@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.adapters.http.router import router
+from app.application.errors import RecordingFlowError
 from app.composition.container import get_service, get_settings
 from app.jobs.deep_check_worker import DeepCheckWorker
 
@@ -75,6 +76,20 @@ async def not_found(_: Request, exc: KeyError):
 @app.exception_handler(ValueError)
 async def invalid_state(_: Request, exc: ValueError):
     return JSONResponse(status_code=409, content={"error_code": "INVALID_STATE", "message": str(exc)})
+
+
+@app.exception_handler(RecordingFlowError)
+async def recording_flow_error(request: Request, exc: RecordingFlowError):
+    payload = dict(exc.payload)
+    payload["request_id"] = getattr(request.state, "request_id", None)
+    request_logger.info(json.dumps({"event": "recording_flow_error", "request_id": payload["request_id"],
+        "error_code": payload["code"], "http_status": exc.status_code,
+        "session_id": payload.get("session_id"), "item_id": payload.get("item_id"),
+        "session_status": payload.get("debug", {}).get("session_status"),
+        "item_status": payload.get("debug", {}).get("item_status"),
+        "expected_status": payload.get("debug", {}).get("expected_status"),
+        "action": payload["action"]}, separators=(",", ":")))
+    return JSONResponse(status_code=exc.status_code, content=payload)
 
 
 @app.exception_handler(HTTPException)

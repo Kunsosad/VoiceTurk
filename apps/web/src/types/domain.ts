@@ -52,28 +52,22 @@ export type RecordingItem = {
 };
 
 export type RealtimeInfo = {
-  provider: "agora" | "agora_convoai" | "browser_tts";
-  realtime_provider?: "agora" | "agora_convoai" | "browser_tts";
+  provider: "agora" | "browser_tts";
   agora_channel: string | null;
   agora_token: string | null;
   agora_app_id: string | null;
   uid: string;
-  agora_uid?: string;
+  contributor_rtc_uid?: string;
   expires_at?: string;
-  coach_provider?: "agora_convoai" | "browser_tts" | "browser_tts_fallback";
+  coach_provider?: "agora_agent" | "agora_agent_failed" | "browser_tts" | "browser_tts_fallback";
   convoai_available?: boolean;
-  coach_status?: "starting" | "ready" | "fallback" | "error";
-  coach_session_id?: string | null;
-  agora_agent_uid?: string | null;
-};
-
-export type CoachStatus = {
-  available: boolean;
-  provider: "agora_convoai" | "browser_tts";
-  status: string;
-  message?: string;
-  coach_session_id?: string | null;
-  agent_uid?: string | null;
+  agent_join_status?: "joined" | "failed" | "config_missing" | "not_applicable";
+  agent_rtc_uid?: string | null;
+  expected_agent_uid?: string | null;
+  agent_session_id?: string | null;
+  agent_join_error_code?: string | null;
+  agent_join_message?: string | null;
+  allow_coach_fallback?: boolean;
 };
 
 export type FeedbackContext = {

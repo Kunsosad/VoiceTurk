@@ -7,7 +7,7 @@ from app.adapters.persistence.sqlite import SQLiteRepository
 from app.adapters.proof.local_hash import LocalHashProofAdapter
 from app.adapters.queue.in_process import InProcessJobQueueAdapter
 from app.adapters.realtime.agora import AgoraRealtimeTokenAdapter
-from app.adapters.realtime.convoai import AgoraConvoAIAdapter, AgoraConvoAIUnavailableAdapter
+from app.adapters.realtime.convoai import AgoraAgentStudioAdapter, AgoraConvoAIUnavailableAdapter
 from app.adapters.storage.local import LocalStorageAdapter
 from app.adapters.storage.minio import MinioStorageAdapter
 from app.application.service import VoiceTurkService
@@ -48,11 +48,16 @@ def get_service() -> VoiceTurkService:
         leading_silence_max_ms=settings.fast_check_leading_silence_max_ms,
         trailing_silence_max_ms=settings.fast_check_trailing_silence_max_ms,
         min_file_size_bytes=settings.fast_check_min_file_size_bytes)
-    uses_agora = settings.realtime_provider in {"agora", "agora_convoai"}
-    realtime = AgoraRealtimeTokenAdapter(settings.agora_app_id, settings.agora_app_certificate) if uses_agora else AgoraRealtimeTokenAdapter("", "")
-    coach_voice = (AgoraConvoAIAdapter(settings.agora_app_id, settings.agora_app_certificate,
-        settings.agora_agent_uid) if settings.realtime_provider == "agora_convoai" else AgoraConvoAIUnavailableAdapter())
+    realtime = AgoraRealtimeTokenAdapter(settings.agora_app_id, settings.agora_app_certificate) if settings.realtime_provider == "agora" else AgoraRealtimeTokenAdapter("", "")
+    coach_voice = (AgoraAgentStudioAdapter(settings.agora_app_id, settings.agora_customer_id,
+        settings.agora_customer_secret, settings.agora_agent_name, settings.agora_agent_pipeline_id,
+        settings.agora_agent_rtc_uid_base, settings.agora_agent_remote_uids,
+        settings.agora_agent_region, settings.agora_agent_join_timeout_seconds,
+        app_certificate_configured=bool(settings.agora_app_certificate))
+        if settings.realtime_provider == "agora" else AgoraConvoAIUnavailableAdapter())
     return VoiceTurkService(repository, storage, fast_check, TechnicalDeepCheckAdapter(), LocalHashProofAdapter(),
         InProcessJobQueueAdapter(), realtime,
         settings.local_export_dir, settings.keep_failed_uploads, settings.s3_presigned_expire_seconds,
-        settings.fast_check_timeout_seconds, coach_voice)
+        settings.fast_check_timeout_seconds, coach_voice,
+        realtime_provider=settings.realtime_provider,
+        allow_coach_fallback=settings.allow_coach_fallback)

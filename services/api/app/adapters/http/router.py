@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.adapters.auth.security import AuthenticationError, AuthManager
-from app.adapters.http.schemas import (AgoraTokenRequest, CampaignCreate, CampaignUpdate, CoachSpeakRequest, DatasetBuildRequest,
+from app.adapters.http.schemas import (AgoraTokenRequest, CampaignCreate, CampaignUpdate, DatasetBuildRequest,
     DatasetVerifyRequest, DebugStorageInitRequest, LoginRequest, RegisterRequest, RetakeStartRequest, ReviewRequest,
     ScriptLineInput, SessionStart, UploadCompleteRequest, UploadInitRequest)
 from app.application.service import VoiceTurkService
+from app.application.errors import RecordingFlowError
 from app.composition.container import get_service, get_settings
 from app.core.config import Settings
 from app.domain.entities import User
@@ -45,7 +46,11 @@ def authorize_campaign(service: VoiceTurkService, user: User, campaign_id: str, 
 
 
 def authorize_session(service: VoiceTurkService, user: User, session_id: str) -> dict:
-    session = service.session_detail(session_id)
+    try:
+        session = service.session_detail(session_id)
+    except KeyError as exc:
+        raise RecordingFlowError(404, "SESSION_NOT_FOUND", "Recording session not found",
+            "Không tìm thấy phiên thu âm. Hệ thống sẽ đồng bộ lại.", session_id=session_id) from exc
     if user.role == UserRole.ADMIN or session["contributor_id"] == user.user_id:
         return session
     raise HTTPException(status_code=403, detail={"error_code": "FORBIDDEN", "message": "Recording session access denied"})
@@ -262,27 +267,6 @@ def complete_session(session_id: str, service: VoiceTurkService = Depends(get_se
     return service.complete_session(session_id)
 
 
-@router.get("/recording-sessions/{session_id}/coach/status")
-def coach_status(session_id: str, service: VoiceTurkService = Depends(get_service),
-                 user: User = Depends(current_user)):
-    authorize_session(service, user, session_id)
-    return service.coach_status(session_id)
-
-
-@router.post("/recording-sessions/{session_id}/coach/speak")
-def coach_speak(session_id: str, body: CoachSpeakRequest, service: VoiceTurkService = Depends(get_service),
-                user: User = Depends(current_user)):
-    authorize_session(service, user, session_id)
-    return service.speak_coach(session_id, body.kind, body.message, body.feedback_context)
-
-
-@router.post("/recording-sessions/{session_id}/coach/stop")
-def coach_stop(session_id: str, service: VoiceTurkService = Depends(get_service),
-               user: User = Depends(current_user)):
-    authorize_session(service, user, session_id)
-    return service.stop_coach_session(session_id)
-
-
 @router.post("/recording-items/{item_id}/submit-audio")
 def submit_audio(item_id: str, audio: UploadFile = File(),
                  session_id: str = Form(), contributor_id: str = Form(), duration_ms: int = Form(),
@@ -295,11 +279,13 @@ def submit_audio(item_id: str, audio: UploadFile = File(),
 
 @router.post("/audio/uploads/init")
 def init_upload(body: UploadInitRequest, service: VoiceTurkService = Depends(get_service),
-                settings: Settings = Depends(get_settings), user: User = Depends(current_user)):
+                settings: Settings = Depends(get_settings), user: User = Depends(current_user), request: Request = None):
     authorize_session(service, user, body.session_id)
     if body.size_bytes > settings.max_audio_size_bytes:
         raise HTTPException(status_code=413, detail={"error_code": "AUDIO_TOO_LARGE", "message": "Audio exceeds configured size limit"})
-    return service.init_upload(body.model_dump())
+    data = body.model_dump()
+    data["request_id"] = getattr(request.state, "request_id", None) if request else None
+    return service.init_upload(data)
 
 
 @router.put("/audio/uploads/{upload_id}/content")
@@ -318,9 +304,11 @@ async def put_upload(upload_id: str, request: Request, service: VoiceTurkService
 
 @router.post("/audio/uploads/complete")
 def complete_upload(body: UploadCompleteRequest, service: VoiceTurkService = Depends(get_service),
-                    user: User = Depends(current_user)):
+                    user: User = Depends(current_user), request: Request = None):
     authorize_session(service, user, body.session_id)
-    response, _ = service.complete_upload(body.model_dump())
+    data = body.model_dump()
+    data["request_id"] = getattr(request.state, "request_id", None) if request else None
+    response, _ = service.complete_upload(data)
     return response
 
 

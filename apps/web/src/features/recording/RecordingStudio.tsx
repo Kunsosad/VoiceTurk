@@ -119,6 +119,7 @@ export function RecordingStudio({ campaignId }: Props) {
   const [lastCheck, setLastCheck] = useState<Record<string, unknown> | null>(null);
   const [micState, setMicState] = useState("not connected");
   const [coachProvider, setCoachProvider] = useState("Coach unavailable");
+  const [coachError, setCoachError] = useState<string | null>(null);
   const [events, setEvents] = useState<Array<{ at: string; event: PipelineEvent; detail?: string }>>([]);
 
   const recorder = useRef(new BrowserMediaRecorder());
@@ -134,10 +135,12 @@ export function RecordingStudio({ campaignId }: Props) {
     () => {
       const unsubscribe = coach.onConnectionStateChange((state) => {
         log("REALTIME_STATUS", state);
-        if (state === "AGENT_READY") setCoachProvider("Coach: Agora ConvoAI · ready");
-        if (state.includes("FALLBACK") || state === "AGENT_LEFT_FALLBACK") {
-          setCoachProvider("Coach: Browser TTS fallback");
-        }
+        if (state.startsWith("AGENT_WAITING")) setCoachProvider("Waiting for Agora Agent Studio…");
+        if (state.startsWith("AGENT_CONNECTED")) { setCoachProvider("Agora Agent Studio connected"); setCoachError(null); }
+        if (state.startsWith("AGENT_AUDIO_SUBSCRIBED")) { setCoachProvider("Agora Agent Studio audio subscribed"); setCoachError(null); }
+        if (state.startsWith("AGENT_NOT_DETECTED")) { setCoachProvider("Agora Agent Studio failed"); setCoachError("Agent not detected in RTC channel"); }
+        if (state.startsWith("AGENT_LEFT_FAILED")) { setCoachProvider("Agora Agent Studio failed"); setCoachError("Agent left the RTC channel"); }
+        if (state.startsWith("AGENT_LEFT_FALLBACK")) setCoachProvider("Browser TTS fallback (explicitly allowed)");
       });
       return () => {
         unsubscribe();
@@ -170,13 +173,23 @@ export function RecordingStudio({ campaignId }: Props) {
       const value = await api.startSession(campaignId);
       log("SESSION_START_RESPONSE", `${value.session_id} · ${value.items.length} items`);
       setSession(value);
-      setMicState(value.realtime.provider === "browser_tts" ? "browser microphone" : "Agora connecting");
-      const joined = await deadline(coach.joinSession({ session_id: value.session_id, realtime: value.realtime }), 15000, "REALTIME_JOIN");
+      setCoachError(null);
+      if (value.realtime.coach_provider === "agora_agent") {
+        setCoachProvider("Waiting for Agora Agent Studio…");
+      } else if (value.realtime.coach_provider === "agora_agent_failed") {
+        setCoachProvider("Agora Agent Studio failed");
+        setCoachError(`${value.realtime.agent_join_error_code ?? "AGENT_JOIN_FAILED"}: ${value.realtime.agent_join_message ?? "Unknown error"}`);
+      }
+      setMicState(value.realtime.provider === "agora" ? "Agora connecting" : "browser microphone");
+      const joined = await deadline(coach.joinSession({ session_id: value.session_id, realtime: value.realtime }), 20000, "REALTIME_JOIN");
       setMicState(joined.rtcJoined && joined.micPublished ? "Agora RTC · mic published" : "browser microphone");
-      const providerLabel = joined.voiceProvider === "agora_convoai" ? "Coach: Agora ConvoAI" :
-        joined.voiceProvider === "browser_tts_fallback" ? "Coach: Browser TTS fallback" :
-        joined.voiceProvider === "browser_tts" ? "Coach: Browser TTS" : "Coach unavailable · text only";
+      const providerLabel = joined.voiceProvider === "agora_agent" && joined.agentAudioSubscribed ? "Agora Agent Studio audio subscribed" :
+        joined.voiceProvider === "agora_agent" ? "Agora Agent Studio connected" :
+        joined.voiceProvider === "agora_agent_failed" ? "Agora Agent Studio failed" :
+        joined.voiceProvider === "browser_tts_fallback" ? "Browser TTS fallback (explicitly allowed)" :
+        joined.voiceProvider === "browser_tts" ? "Browser TTS" : "Coach unavailable · text only";
       setCoachProvider(providerLabel);
+      if (joined.voiceProvider === "agora_agent_failed") setCoachError(joined.warning ?? value.realtime.agent_join_message ?? "Agora Agent Studio failed");
       log("REALTIME_STATUS", `${joined.transport} · joined=${joined.rtcJoined} · mic=${joined.micPublished} · ${joined.voiceProvider}`);
       await loadNext(value.session_id);
     } catch (error) {
@@ -636,7 +649,13 @@ export function RecordingStudio({ campaignId }: Props) {
               <dt>Microphone</dt>
               <dd style={{ fontSize: "0.78rem" }}>{micState}</dd>
               <dt>Voice coach</dt>
-              <dd style={{ fontSize: "0.78rem" }}>{coachProvider}</dd>
+              <dd style={{ fontSize: "0.78rem" }}>
+                {coachProvider}
+                {session.realtime.expected_agent_uid && coachProvider.startsWith("Waiting") && (
+                  <span style={{ display: "block", marginTop: 4 }}>Expected agent uid: {session.realtime.expected_agent_uid}</span>
+                )}
+                {coachError && <span style={{ display: "block", marginTop: 4, color: "var(--danger)" }}>Reason: {coachError}</span>}
+              </dd>
               <dt>Retake queue</dt>
               <dd>{retakes}</dd>
               <dt>Session</dt>

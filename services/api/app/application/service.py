@@ -13,7 +13,8 @@ from app.domain.entities import AudioSample, Campaign, DatasetVersion, Recording
 from app.domain.enums import (AudioSampleStatus, CampaignStatus, DatasetVersionStatus, DeepCheckDecision,
     RecordingItemStatus, RecordingSessionStatus, ScriptLineStatus, UserRole, ValidatorDecision)
 from app.domain.policies import validator_states
-from app.ports.providers import (CoachVoicePort, DeepCheckPort, FastCheckPort, JobQueuePort, ObjectStoragePort,
+from app.application.errors import RecordingFlowError
+from app.ports.providers import (CoachVoicePort, CoachVoiceResult, DeepCheckPort, FastCheckPort, JobQueuePort, ObjectStoragePort,
                                  ProofProviderPort, RealtimeTokenPort)
 from app.ports.repositories import RepositoryPort
 
@@ -29,14 +30,18 @@ class VoiceTurkService:
                  deep_check: DeepCheckPort, proof: ProofProviderPort, queue: JobQueuePort,
                  realtime: RealtimeTokenPort, export_root: Path, keep_failed_uploads: bool = False,
                  presigned_expire_seconds: int = 900, fast_check_timeout_seconds: float = 15.0,
-                 coach_voice: CoachVoicePort | None = None) -> None:
+                 coach_voice: CoachVoicePort | None = None, realtime_provider: str | None = None,
+                 allow_coach_fallback: bool = False) -> None:
         self.repo, self.storage, self.fast_check = repository, storage, fast_check
         self.deep_check, self.proof, self.queue, self.realtime = deep_check, proof, queue, realtime
         self.export_root, self.keep_failed_uploads = export_root, keep_failed_uploads
         self.presigned_expire_seconds, self.fast_check_timeout_seconds = presigned_expire_seconds, fast_check_timeout_seconds
         self.coach_voice = coach_voice
+        self.realtime_provider = realtime_provider or ("agora" if realtime.configured() else "browser_tts")
+        self.allow_coach_fallback = allow_coach_fallback
         self._deep_check_lock = RLock()
         self._deep_check_in_progress: set[str] = set()
+        self._upload_lock = RLock()
 
     # Unified user and campaign workflow
     def seed_demo(self) -> dict[str, Any]:
@@ -215,47 +220,76 @@ class VoiceTurkService:
         session = RecordingSession(new_id("session"), campaign_id, contributor_id, status=RecordingSessionStatus.ACTIVE)
         self.repo.add("sessions", session)
         items = []
-        assigned_entities: list[RecordingItem] = []
         for item in self._campaign("items", campaign_id):
             if item.status == RecordingItemStatus.OPEN:
                 item.status, item.assigned_to, item.assigned_at = RecordingItemStatus.ASSIGNED, contributor_id, now()
                 self.repo.add("items", item)
-                assigned_entities.append(item)
                 items.append(self._item_dto(item))
+                break
+        import zlib
+        contributor_rtc_uid = str(100000 + (zlib.crc32(session.session_id.encode("utf-8")) % 1000000))
         realtime = {"provider": "browser_tts", "agora_channel": None, "agora_token": None,
             "agora_app_id": None, "uid": contributor_id, "coach_provider": "browser_tts",
-            "convoai_available": False, "coach_status": "fallback", "coach_session_id": None,
-            "agora_agent_uid": None}
-        if self.realtime.configured():
-            token = self.realtime.issue_token(f"vt_{session.session_id}", contributor_id, "publisher")
+            "contributor_rtc_uid": contributor_rtc_uid, "convoai_available": False,
+            "agent_join_status": "not_applicable", "agent_rtc_uid": None,
+            "agent_session_id": None, "agent_join_error_code": None,
+            "agent_join_message": None, "expected_agent_uid": None,
+            "allow_coach_fallback": self.allow_coach_fallback}
+        if self.realtime_provider == "agora":
+            channel = f"vt_session_{session.session_id}"
+            token = None
             coach_result = None
-            if self.coach_voice and self.coach_voice.configured():
-                first_item = assigned_entities[0] if assigned_entities else None
-                first_line = self._required("script_lines", first_item.line_id) if first_item else None
-                task_context = ({"transcript": first_line.transcript, "target_emotion": first_item.target_emotion,
-                    "context_brief": first_line.context_brief, "instruction": self._instruction(first_item)} if first_item else
-                    {"instruction": "Hãy chuẩn bị thu âm câu trên màn hình."})
+            agent_rtc_uid = (self.coach_voice.agent_rtc_uid(session.session_id, contributor_rtc_uid)
+                             if self.coach_voice else None)
+            if self.realtime.configured():
+                token = self.realtime.issue_token(channel, contributor_rtc_uid, "publisher")
+            if self.realtime.configured() and self.coach_voice and self.coach_voice.configured() and agent_rtc_uid:
                 try:
-                    coach_result = self.coach_voice.start_coach_session(session.session_id, token["channel"],
-                        contributor_id, task_context)
+                    if agent_rtc_uid == contributor_rtc_uid:
+                        raise RuntimeError("Agent RTC UID must differ from contributor RTC UID")
+                    agent_token = self.realtime.issue_token(channel, agent_rtc_uid, "publisher")
+                    coach_result = self.coach_voice.join_agent(session.session_id, channel,
+                                                               agent_rtc_uid, agent_token["token"], contributor_rtc_uid)
                 except Exception as exc:
-                    logger.warning(json.dumps({"event": "coach_start_fallback", "session_id": session.session_id,
-                        "error_type": type(exc).__name__}))
-                if coach_result and coach_result.coach_session_id:
-                    session.agora_session_id = coach_result.coach_session_id
-                    self.repo.add("sessions", session)
-            realtime = {"provider": "agora_convoai" if self.coach_voice and self.coach_voice.configured() else "agora",
-                        "realtime_provider": "agora_convoai" if self.coach_voice and self.coach_voice.configured() else "agora",
-                        "agora_channel": token["channel"], "agora_token": token["token"],
-                        "agora_app_id": token["app_id"], "uid": contributor_id, "expires_at": token["expires_at"],
-                        "agora_uid": contributor_id,
-                        "coach_provider": "agora_convoai" if coach_result and coach_result.available else "browser_tts_fallback",
+                    logger.warning(json.dumps({"event": "agora.agent.join.failed",
+                        "session_id": session.session_id, "channel": channel,
+                        "agent_rtc_uid": agent_rtc_uid,
+                        "error_code": "AGORA_AGENT_START_FAILED",
+                        "error_message": f"{type(exc).__name__}: {str(exc)[:240]}"}))
+                    coach_result = CoachVoiceResult(False, "agora_agent", "failed",
+                        "Agora Agent Studio could not start.", agent_rtc_uid,
+                        error_code="AGORA_AGENT_START_FAILED")
+            elif self.coach_voice:
+                coach_result = self.coach_voice.join_agent(session.session_id, channel,
+                                                            agent_rtc_uid or "", "", contributor_rtc_uid)
+            if coach_result and coach_result.available:
+                session.agora_session_id = coach_result.agent_session_id
+                self.repo.add("sessions", session)
+            coach_provider = ("agora_agent" if coach_result and coach_result.available else
+                "browser_tts_fallback" if self.allow_coach_fallback else "agora_agent_failed")
+            realtime = {"provider": "agora", "agora_channel": channel,
+                        "agora_token": token["token"] if token else None,
+                        "agora_app_id": token["app_id"] if token else None,
+                        "uid": contributor_id, "expires_at": token["expires_at"] if token else None,
+                        "contributor_rtc_uid": contributor_rtc_uid,
+                        "coach_provider": coach_provider,
                         "convoai_available": bool(coach_result and coach_result.available),
-                        "coach_status": coach_result.status if coach_result else "fallback",
-                        "coach_session_id": coach_result.coach_session_id if coach_result else None,
-                        "agora_agent_uid": coach_result.agent_uid if coach_result else None}
+                        "agent_join_status": coach_result.status if coach_result else "config_missing",
+                        "agent_rtc_uid": coach_result.agent_rtc_uid if coach_result else agent_rtc_uid,
+                        "expected_agent_uid": coach_result.agent_rtc_uid if coach_result else agent_rtc_uid,
+                        "agent_session_id": coach_result.agent_session_id if coach_result else None,
+                        "agent_join_error_code": coach_result.error_code if coach_result else "MISSING_AGORA_AGENT_CONFIG",
+                        "agent_join_message": coach_result.message if coach_result else "Agora Agent Studio config is missing.",
+                        "allow_coach_fallback": self.allow_coach_fallback}
         return {"session_id": session.session_id, "campaign_id": campaign_id, "contributor_id": contributor_id,
-                "status": session.status, "realtime": realtime, "items": items}
+                "status": session.status, "realtime": realtime,
+                "agora_channel": realtime["agora_channel"],
+                "contributor_rtc_uid": realtime["contributor_rtc_uid"],
+                "agora_token": realtime["agora_token"],
+                "coach_provider": realtime["coach_provider"],
+                "agent_join_status": realtime["agent_join_status"],
+                "agent_rtc_uid": realtime["agent_rtc_uid"],
+                "expected_agent_uid": realtime["expected_agent_uid"], "items": items}
 
     def session_items(self, session_id: str) -> list[dict[str, Any]]:
         session = self._required("sessions", session_id)
@@ -279,8 +313,14 @@ class VoiceTurkService:
                 "submitted_in_session_count": len(samples), "reason": reason}
         def response(action: str, item: RecordingItem | None, message: str, reason: str,
                      feedback_context: dict[str, Any] | None = None) -> dict[str, Any]:
-            value = {"action": action, "item": self._item_dto(item) if item else None,
-                "coach_message_vi": message, "retake_count": self._retake_count(session.campaign_id),
+            code = {"START_ITEM": "ITEM_READY", "RETAKE_ITEM": "RETAKE_ITEM_READY",
+                "WAIT_DEEPCHECK": "DEEP_CHECK_PENDING", "WAITING_FOR_RECORDING": "SYNC_SESSION",
+                "SESSION_COMPLETE": "SESSION_COMPLETED", "ERROR": "INVALID_RECORDING_STATE"}.get(action, action)
+            value = {"action": action, "code": code, "item": self._item_dto(item) if item else None,
+                "next_item": self._item_dto(item) if item else None, "coach_message_vi": message,
+                "message_vi": message, "session_id": session_id, "item_id": item.item_id if item else None,
+                "sample_id": None, "retry_same_item": action == "RETAKE_ITEM",
+                "retake_count": self._retake_count(session.campaign_id),
                 "feedback_context": feedback_context, "progress": self._progress(session.campaign_id),
                 "debug": debug(reason)}
             self._log("next_action_decided", action=action, reason_code=reason, **value["debug"])
@@ -340,104 +380,178 @@ class VoiceTurkService:
 
     def complete_session(self, session_id: str) -> dict[str, Any]:
         session = self._required("sessions", session_id)
-        coach = self.stop_coach_session(session_id)
         for item in self._campaign("items", session.campaign_id):
             if item.assigned_to == session.contributor_id and item.status == RecordingItemStatus.ASSIGNED:
                 item.status, item.assigned_to, item.assigned_at = RecordingItemStatus.OPEN, None, None
                 self.repo.add("items", item)
         session.status, session.ended_at = RecordingSessionStatus.COMPLETED, now()
         self.repo.add("sessions", session)
-        return {"session_id": session_id, "status": session.status, "coach_status": coach["status"]}
+        return {"session_id": session_id, "status": session.status}
 
-    def coach_status(self, session_id: str) -> dict[str, Any]:
-        session = self._required("sessions", session_id)
-        if not self.coach_voice:
-            return {"available": False, "provider": "browser_tts", "status": "fallback",
-                    "coach_session_id": None, "agent_uid": None}
-        return self.coach_voice.get_coach_status(session_id, session.agora_session_id).to_dict()
+    def _recording_upload_entities(self, session_id: str | None, item_id: str | None,
+                                   request_id: str | None = None) -> tuple[RecordingSession, RecordingItem]:
+        session = self.repo.get("sessions", session_id) if session_id else None
+        if not session:
+            raise RecordingFlowError(404, "SESSION_NOT_FOUND", "Recording session not found",
+                "Không tìm thấy phiên thu âm. Hệ thống sẽ đồng bộ lại.", session_id=session_id,
+                item_id=item_id, request_id=request_id)
+        item = self.repo.get("items", item_id) if item_id else None
+        if not item:
+            raise RecordingFlowError(404, "ITEM_NOT_FOUND", "Recording item not found",
+                "Không tìm thấy câu thu âm. Hệ thống sẽ đồng bộ lại.", session_id=session_id,
+                item_id=item_id, debug={"session_status": session.status}, request_id=request_id)
+        return session, item
 
-    def speak_coach(self, session_id: str, kind: str, message: str,
-                    feedback_context: dict[str, Any] | None = None) -> dict[str, Any]:
-        session = self._required("sessions", session_id)
-        if session.status != RecordingSessionStatus.ACTIVE or not self.coach_voice:
-            return {"available": False, "provider": "browser_tts", "status": "fallback",
-                    "coach_session_id": session.agora_session_id, "agent_uid": None}
-        safe_message = message.strip()[:1000]
-        if not safe_message:
-            raise ValueError("Coach message is required")
-        if kind == "feedback":
-            source = feedback_context or {}
-            safe_context = {key: source.get(key) for key in ("sample_id", "item_id", "decision", "reason_codes",
-                "target_transcript", "asr_transcript", "missing_words", "extra_words", "target_emotion",
-                "context_brief", "metrics", "coach_constraints")}
-            safe_context["message_vi"] = safe_message
-            result = self.coach_voice.speak_feedback(session_id, safe_context, session.agora_session_id)
-        else:
-            result = self.coach_voice.speak_instruction(session_id, {"instruction": safe_message},
-                                                        session.agora_session_id)
-        return result.to_dict()
-
-    def stop_coach_session(self, session_id: str) -> dict[str, Any]:
-        session = self._required("sessions", session_id)
-        if not self.coach_voice:
-            return {"available": False, "provider": "browser_tts", "status": "stopped",
-                    "coach_session_id": session.agora_session_id, "agent_uid": None}
-        return self.coach_voice.stop_coach_session(session_id, session.agora_session_id).to_dict()
+    def _validate_recording_upload_state(self, session: RecordingSession, item: RecordingItem,
+                                         request_id: str | None = None) -> None:
+        debug = {"session_status": session.status, "item_status": item.status}
+        if session.status != RecordingSessionStatus.ACTIVE:
+            if session.status == RecordingSessionStatus.STARTED:
+                code, message = "SESSION_NOT_READY_FOR_UPLOAD", "Phiên thu chưa sẵn sàng. Hệ thống sẽ đồng bộ lại."
+            elif session.status == RecordingSessionStatus.COMPLETED:
+                code, message = "SESSION_ALREADY_COMPLETED", "Phiên thu đã hoàn thành. Hệ thống sẽ đồng bộ lại."
+            else:
+                code, message = "SESSION_NOT_ACTIVE", "Phiên thu không còn hoạt động. Hệ thống sẽ đồng bộ lại."
+            debug["expected_session_status"] = RecordingSessionStatus.ACTIVE
+            debug["expected_status"] = RecordingSessionStatus.ACTIVE
+            raise RecordingFlowError(409, code, "Recording session is not ready for upload", message,
+                session_id=session.session_id, item_id=item.item_id, debug=debug, request_id=request_id)
+        if item.campaign_id != session.campaign_id or item.assigned_to != session.contributor_id:
+            debug["expected_contributor_id"] = session.contributor_id
+            raise RecordingFlowError(409, "ITEM_NOT_ASSIGNED_TO_SESSION",
+                "Recording item is not assigned to this session",
+                "Câu thu âm không thuộc phiên hiện tại. Hệ thống sẽ đồng bộ lại.",
+                session_id=session.session_id, item_id=item.item_id, debug=debug, request_id=request_id)
+        if item.status != RecordingItemStatus.ASSIGNED:
+            existing = next((sample for sample in reversed(self.repo.list("samples"))
+                             if sample.item_id == item.item_id), None)
+            code = "ITEM_ALREADY_SUBMITTED" if item.status in {
+                RecordingItemStatus.REVIEW_PENDING, RecordingItemStatus.ACCEPTED} else "ITEM_NOT_READY_FOR_UPLOAD"
+            message = ("Câu này đã được gửi trước đó. Hệ thống sẽ đồng bộ lại." if code == "ITEM_ALREADY_SUBMITTED" else
+                       "Câu hiện tại chưa sẵn sàng để upload. Hệ thống sẽ đồng bộ lại phiên thu.")
+            debug["expected_item_status"] = RecordingItemStatus.ASSIGNED
+            debug["expected_status"] = RecordingItemStatus.ASSIGNED
+            raise RecordingFlowError(409, code, "Session or item is not ready for upload", message,
+                session_id=session.session_id, item_id=item.item_id,
+                sample_id=existing.sample_id if existing else None, debug=debug, request_id=request_id)
 
     # Temporary upload -> FastCheck -> official sample
     def init_upload(self, data: dict[str, Any]) -> dict[str, Any]:
-        self._log("upload_init_received", session_id=data.get("session_id"), item_id=data.get("item_id"))
-        session = self._required("sessions", data["session_id"])
-        item = self._required("items", data["item_id"])
-        if session.status != RecordingSessionStatus.ACTIVE or item.status != RecordingItemStatus.ASSIGNED:
-            raise ValueError("Session or item is not ready for upload")
-        if item.campaign_id != session.campaign_id or item.assigned_to != session.contributor_id:
-            raise ValueError("Session, item, and contributor assignment do not match")
+        session, item = self._recording_upload_entities(data.get("session_id"), data.get("item_id"), data.get("request_id"))
+        self._validate_recording_upload_state(session, item, data.get("request_id"))
+        self._log("upload_init_received", request_id=data.get("request_id"), session_id=session.session_id,
+            item_id=item.item_id, contributor_id=session.contributor_id, session_status=session.status,
+            item_status=item.status)
         if data.get("content_type") not in ("audio/wav", "audio/x-wav", "audio/wave"):
             raise ValueError("Only PCM WAV audio is supported")
         suffix = Path(data.get("filename") or "recording.wav").suffix.lower() or ".wav"
         if suffix != ".wav":
             raise ValueError("Audio filename must use the .wav extension")
+        attempt_id = data.get("client_attempt_id")
+        if attempt_id:
+            existing = next((value for value in self.repo.list("uploads") if
+                value.get("session_id") == session.session_id and value.get("item_id") == item.item_id and
+                value.get("client_attempt_id") == attempt_id), None)
+            if existing:
+                presigned = self.storage.create_presigned_put_url(existing["object_key"], existing["content_type"],
+                                                                  self.presigned_expire_seconds)
+                return {"action": "CONTINUE_UPLOAD", "code": "UPLOAD_ALREADY_INITIALIZED",
+                    "message_vi": "Lượt upload đã được khởi tạo.", "upload_id": existing["upload_id"],
+                    "object_key": existing["object_key"],
+                    "upload_url": presigned or f"/audio/uploads/{existing['upload_id']}/content",
+                    "upload_method": "PUT", "expires_in": self.presigned_expire_seconds}
         upload_id = new_id("upload")
         object_key = f"tmp/audio/{session.session_id}/{item.item_id}/{uuid4().hex}{suffix}"
         upload = {"upload_id": upload_id, "session_id": session.session_id, "item_id": item.item_id,
             "object_key": object_key, "filename": data.get("filename") or f"recording{suffix}",
             "content_type": data.get("content_type") or "audio/wav", "size_bytes": data.get("size_bytes", 0),
-            "status": "INITIALIZED", "created_at": now()}
+            "status": "INITIALIZED", "client_attempt_id": attempt_id, "created_at": now()}
         self.repo.add("uploads", upload)
         presigned = self.storage.create_presigned_put_url(object_key, upload["content_type"], self.presigned_expire_seconds)
-        self._log("presigned_url_created", session_id=session.session_id, item_id=item.item_id,
-                  upload_id=upload_id, object_key=object_key)
-        return {"upload_id": upload_id, "object_key": object_key,
+        self._log("presigned_url_created", request_id=data.get("request_id"), session_id=session.session_id,
+            item_id=item.item_id, contributor_id=session.contributor_id, session_status=session.status,
+            item_status=item.status, upload_id=upload_id, object_key=object_key)
+        return {"action": "CONTINUE_UPLOAD", "code": "UPLOAD_INITIALIZED",
+            "message_vi": "Sẵn sàng nhận file thu âm.", "upload_id": upload_id, "object_key": object_key,
             "upload_url": presigned or f"/audio/uploads/{upload_id}/content", "upload_method": "PUT",
             "expires_in": self.presigned_expire_seconds}
 
     def put_upload(self, upload_id: str, data: bytes, content_type: str | None = None) -> dict[str, Any]:
-        upload = self._required("uploads", upload_id)
-        self.storage.put_object(upload["object_key"], data, content_type or upload["content_type"])
+        upload = self.repo.get("uploads", upload_id)
+        if not upload:
+            raise RecordingFlowError(404, "UPLOAD_NOT_FOUND", "Upload not found",
+                "Không tìm thấy lượt upload. Bạn hãy khởi tạo lại.")
+        if upload.get("status") == "COMPLETED":
+            return {"action": "CONTINUE_NEXT", "code": "UPLOAD_ALREADY_COMPLETED",
+                "message_vi": "Lượt upload đã hoàn tất.", "upload_id": upload_id,
+                "status": upload["status"], "sample_id": upload.get("sample_id")}
+        if upload.get("status") == "PROCESSING":
+            raise RecordingFlowError(409, "UPLOAD_STILL_PROCESSING", "Upload is still processing",
+                "Lượt upload đang được xử lý. Bạn vui lòng chờ trong giây lát.",
+                session_id=upload.get("session_id"), item_id=upload.get("item_id"))
+        try:
+            self.storage.put_object(upload["object_key"], data, content_type or upload["content_type"])
+        except Exception as exc:
+            raise RecordingFlowError(503, "STORAGE_UNAVAILABLE", "Object storage write failed",
+                "Kho lưu trữ đang tạm thời gián đoạn. Bạn hãy thử lại sau.", action="ERROR",
+                session_id=upload.get("session_id"), item_id=upload.get("item_id"),
+                debug={"error_type": type(exc).__name__}) from exc
         upload["status"], upload["size_bytes"] = "UPLOADED", len(data)
         self.repo.add("uploads", upload)
-        return {"upload_id": upload_id, "status": upload["status"], "size_bytes": len(data)}
+        return {"action": "CONTINUE_UPLOAD", "code": "UPLOAD_RECEIVED",
+            "message_vi": "Đã nhận file thu âm.", "upload_id": upload_id,
+            "status": upload["status"], "size_bytes": len(data)}
 
     def complete_upload(self, data: dict[str, Any]) -> tuple[dict[str, Any], AudioSample | None]:
         complete_started_at = time.perf_counter()
-        upload = self._required("uploads", data["upload_id"])
-        context = {"session_id": data.get("session_id"), "item_id": data.get("item_id"),
-                   "upload_id": data.get("upload_id"), "object_key": data.get("object_key")}
-        self._log("upload_complete_received", **context)
+        upload = self.repo.get("uploads", data.get("upload_id"))
+        if not upload:
+            raise RecordingFlowError(404, "UPLOAD_NOT_FOUND", "Upload not found",
+                "Không tìm thấy lượt upload. Bạn hãy đồng bộ và thử lại.", session_id=data.get("session_id"),
+                item_id=data.get("item_id"), request_id=data.get("request_id"))
+        context = {"request_id": data.get("request_id"), "session_id": data.get("session_id"),
+            "item_id": data.get("item_id"), "client_attempt_id": data.get("client_attempt_id") or
+            upload.get("client_attempt_id") or upload["upload_id"], "upload_id": data.get("upload_id"),
+            "object_key": data.get("object_key")}
         if upload["session_id"] != data["session_id"] or upload["item_id"] != data["item_id"] or upload["object_key"] != data["object_key"]:
-            raise ValueError("Upload completion does not match initialized upload")
-        self._log("object_exists_check_started", **context)
-        exists = self.storage.object_exists(upload["object_key"])
-        self._log("object_exists_check_finished", **context, object_exists=exists)
-        if not exists:
+            raise RecordingFlowError(409, "INVALID_STATE_TRANSITION", "Upload completion does not match initialized upload",
+                "Thông tin upload không khớp với lượt đã khởi tạo. Hệ thống sẽ đồng bộ lại.",
+                session_id=data.get("session_id"), item_id=data.get("item_id"), debug={"upload_id": upload["upload_id"]})
+        with self._upload_lock:
+            if upload.get("completion_response"):
+                response = upload["completion_response"]
+                sample = self.repo.get("samples", upload.get("sample_id")) if upload.get("sample_id") else None
+                self._log("upload_complete_idempotent", **context, action=response["action"], sample_id=response.get("sample_id"))
+                return response, sample
+            if upload.get("status") == "PROCESSING":
+                raise RecordingFlowError(409, "UPLOAD_STILL_PROCESSING", "Upload is still processing",
+                    "Lượt upload đang được xử lý. Bạn vui lòng chờ trong giây lát.", session_id=data.get("session_id"),
+                    item_id=data.get("item_id"), debug={"upload_status": "PROCESSING"})
+            session, item = self._recording_upload_entities(upload["session_id"], upload["item_id"], data.get("request_id"))
+            self._validate_recording_upload_state(session, item, data.get("request_id"))
+            self._log("upload_complete_received", **context, contributor_id=session.contributor_id,
+                session_status_before=session.status, item_status_before=item.status)
+            upload["status"] = "PROCESSING"
+            upload["client_attempt_id"] = context["client_attempt_id"]
+            self.repo.add("uploads", upload)
+        try:
+            exists = self.storage.object_exists(upload["object_key"])
+            audio = self.storage.get_object(upload["object_key"]) if exists else None
+        except Exception as exc:
+            upload["status"] = "UPLOADED"
+            self.repo.add("uploads", upload)
+            raise RecordingFlowError(503, "STORAGE_UNAVAILABLE", "Object storage is unavailable",
+                "Kho lưu trữ đang tạm thời gián đoạn. Bạn hãy thử lại sau.", action="ERROR",
+                session_id=session.session_id, item_id=item.item_id,
+                debug={"session_status": session.status, "item_status": item.status,
+                       "error_type": type(exc).__name__}) from exc
+        if not exists or audio is None:
             response = self._fast_response(False, "UPLOAD_OBJECT_NOT_FOUND",
-                "Không tìm thấy file audio vừa upload. Bạn thử gửi lại câu này nhé.", {}, None)
-            self._log("complete_response_returned", **context, action=response["action"], reason_code=response["reason_code"])
+                "Không tìm thấy file audio vừa upload. Bạn thử gửi lại câu này nhé.", {}, None,
+                session=session, item=item, code="UPLOAD_NOT_FOUND")
+            upload["status"], upload["completion_response"] = "FAST_CHECK_FAILED", response
+            self.repo.add("uploads", upload)
             return response, None
-        item = self._required("items", upload["item_id"])
-        session = self._required("sessions", upload["session_id"])
-        audio = self.storage.get_object(upload["object_key"])
         self._log("fastcheck_started", **context)
         fastcheck_started_at = time.perf_counter()
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fastcheck")
@@ -447,57 +561,96 @@ class VoiceTurkService:
         except FutureTimeoutError:
             future.cancel()
             upload["status"] = "FAST_CHECK_TIMEOUT"
-            self.repo.add("uploads", upload)
             if not self.keep_failed_uploads:
                 self.storage.delete_object(upload["object_key"])
             response = self._fast_response(False, "FAST_CHECK_TIMEOUT",
-                "Kiểm tra audio hơi lâu. Bạn thử gửi lại câu này nhé.", {}, None)
-            self._log("fastcheck_finished", **context, action=response["action"], reason_code=response["reason_code"],
-                      fastcheck_duration_ms=round((time.perf_counter() - fastcheck_started_at) * 1000))
-            self._log("complete_response_returned", **context, action=response["action"], reason_code=response["reason_code"])
+                "Kiểm tra audio hơi lâu. Bạn thử gửi lại câu này nhé.", {}, None,
+                session=session, item=item, code="FAST_CHECK_FAILED")
+            upload["completion_response"] = response
+            self.repo.add("uploads", upload)
             return response, None
+        except Exception as exc:
+            upload["status"] = "UPLOADED"
+            self.repo.add("uploads", upload)
+            raise RecordingFlowError(503, "FAST_CHECK_UNAVAILABLE", "FastCheck provider failed",
+                "Kiểm tra audio đang tạm thời gián đoạn. Bạn hãy thử lại sau.", action="ERROR",
+                session_id=session.session_id, item_id=item.item_id,
+                debug={"session_status": session.status, "item_status": item.status,
+                       "error_type": type(exc).__name__}) from exc
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
-        self._log("fastcheck_finished", **context, action="CONTINUE_NEXT" if result.passed else "RETAKE_NOW",
-                  reason_code=result.reason_code, duration_ms=result.metrics.get("duration_ms"),
-                  fastcheck_duration_ms=round((time.perf_counter() - fastcheck_started_at) * 1000))
+        fastcheck_ms = round((time.perf_counter() - fastcheck_started_at) * 1000)
+        self._log("fastcheck_finished", **context, decision="pass" if result.passed else "hard_fail",
+            reason_code=result.reason_code, warnings=result.warnings, fastcheck_duration_ms=fastcheck_ms,
+            duration_ms=result.metrics.get("duration_ms"), blob_size=len(audio),
+            rms_active_dbfs=result.metrics.get("rms_active_dbfs"), active_speech_ratio=result.metrics.get("speech_ratio"),
+            clipped_ratio=result.metrics.get("clipping_ratio"))
         if not result.passed:
             upload["status"] = "FAST_CHECK_FAILED"
-            self.repo.add("uploads", upload)
             if not self.keep_failed_uploads:
                 self.storage.delete_object(upload["object_key"])
-            response = self._fast_response(False, result.reason_code, result.message_vi, result.metrics, None, result.severity, result.warnings)
-            self._log("complete_response_returned", **context, action=response["action"], reason_code=response["reason_code"],
-                      duration_ms=result.metrics.get("duration_ms"))
+            response = self._fast_response(False, result.reason_code, result.message_vi, result.metrics, None,
+                result.severity, result.warnings, session=session, item=item, code="FAST_CHECK_FAILED")
+            upload["completion_response"] = response
+            self.repo.add("uploads", upload)
             return response, None
-        line = self._required("script_lines", item.line_id)
-        sample_id = new_id("sample")
-        suffix = Path(upload["filename"]).suffix.lower() or ".wav"
-        official_key = f"audio/{item.campaign_id}/{item.item_id}/{sample_id}{suffix}"
-        self.storage.copy_object(upload["object_key"], official_key)
-        self.storage.delete_object(upload["object_key"])
-        self._log("audio_promoted_to_official", **context, official_object_key=official_key, sample_id=sample_id)
-        sample = AudioSample(sample_id, item.campaign_id, item.line_id, item.item_id, session.session_id,
-            session.contributor_id, official_key, int(result.metrics["duration_ms"]), line.transcript, line.intent, item.target_emotion)
-        for field, key in (("loudness_db", "rms_dbfs"), ("silence_ratio", "silence_ratio"), ("sample_rate", "sample_rate"),
-            ("channels", "channels"), ("peak_dbfs", "peak_dbfs"), ("clipping_ratio", "clipping_ratio"),
-            ("speech_ratio", "speech_ratio"), ("speech_duration_ms", "speech_duration_ms"),
-            ("leading_silence_ms", "leading_silence_ms"), ("trailing_silence_ms", "trailing_silence_ms"),
-            ("estimated_snr_db", "estimated_snr_db"), ("file_size_bytes", "file_size_bytes"),
-            ("audio_container", "container"), ("fast_check_score", "fast_check_score")):
-            setattr(sample, field, result.metrics.get(key))
-        self.repo.add("samples", sample)
-        self._log("audio_sample_created", **context, sample_id=sample_id, official_object_key=official_key)
-        item.status = RecordingItemStatus.REVIEW_PENDING
-        self.repo.add("items", item)
-        upload["status"], upload["official_object_key"], upload["sample_id"] = "COMPLETED", official_key, sample_id
-        self.repo.add("uploads", upload)
-        self.queue.enqueue(sample_id)
-        self._log("deepcheck_enqueued", **context, sample_id=sample_id, official_object_key=official_key)
-        response = self._fast_response(True, result.reason_code, result.message_vi, result.metrics, sample_id, result.severity, result.warnings)
-        self._log("complete_response_returned", **context, sample_id=sample_id, official_object_key=official_key,
-                  action=response["action"], reason_code=response["reason_code"], duration_ms=result.metrics.get("duration_ms"),
-                  total_complete_duration_ms=round((time.perf_counter() - complete_started_at) * 1000))
+        with self._upload_lock:
+            session, item = self._recording_upload_entities(upload["session_id"], upload["item_id"], data.get("request_id"))
+            self._validate_recording_upload_state(session, item, data.get("request_id"))
+            line = self._required("script_lines", item.line_id)
+            sample_id = new_id("sample")
+            suffix = Path(upload["filename"]).suffix.lower() or ".wav"
+            official_key = f"audio/{item.campaign_id}/{item.item_id}/{sample_id}{suffix}"
+            try:
+                self.storage.copy_object(upload["object_key"], official_key)
+                self.storage.delete_object(upload["object_key"])
+            except Exception as exc:
+                upload["status"] = "UPLOADED"
+                self.repo.add("uploads", upload)
+                raise RecordingFlowError(503, "STORAGE_UNAVAILABLE", "Audio promotion failed",
+                    "Kho lưu trữ đang tạm thời gián đoạn. Bản thu chưa được ghi nhận, bạn hãy thử lại sau.",
+                    action="ERROR", session_id=session.session_id, item_id=item.item_id,
+                    debug={"session_status": session.status, "item_status": item.status,
+                           "error_type": type(exc).__name__}) from exc
+            sample = AudioSample(sample_id, item.campaign_id, item.line_id, item.item_id, session.session_id,
+                session.contributor_id, official_key, int(result.metrics["duration_ms"]), line.transcript, line.intent, item.target_emotion)
+            for field, key in (("loudness_db", "rms_dbfs"), ("silence_ratio", "silence_ratio"), ("sample_rate", "sample_rate"),
+                ("channels", "channels"), ("peak_dbfs", "peak_dbfs"), ("clipping_ratio", "clipping_ratio"),
+                ("speech_ratio", "speech_ratio"), ("speech_duration_ms", "speech_duration_ms"),
+                ("leading_silence_ms", "leading_silence_ms"), ("trailing_silence_ms", "trailing_silence_ms"),
+                ("estimated_snr_db", "estimated_snr_db"), ("file_size_bytes", "file_size_bytes"),
+                ("audio_container", "container"), ("fast_check_score", "fast_check_score")):
+                setattr(sample, field, result.metrics.get(key))
+            self.repo.add("samples", sample)
+            self._log("audio_sample_created", **context, sample_id=sample_id,
+                official_object_key=official_key, sample_status=sample.status)
+            previous_item_status = item.status
+            item.status = RecordingItemStatus.REVIEW_PENDING
+            self.repo.add("items", item)
+            next_item = self._assign_next_recording_item(session, item.item_id)
+            if next_item is None:
+                session.status, session.ended_at = RecordingSessionStatus.COMPLETED, now()
+                self.repo.add("sessions", session)
+            upload["status"], upload["official_object_key"], upload["sample_id"] = "COMPLETED", official_key, sample_id
+            response = self._fast_response(True, result.reason_code, result.message_vi, result.metrics, sample_id,
+                result.severity, result.warnings, session=session, item=item, next_item=next_item,
+                previous_item_status=previous_item_status)
+            upload["completion_response"] = response
+            self.repo.add("uploads", upload)
+        try:
+            queued = self.queue.enqueue(sample_id)
+            self._log("deepcheck_enqueued", **context, sample_id=sample_id,
+                official_object_key=official_key, queued=queued)
+        except Exception as exc:
+            # CHECKING is durable; the worker recovery scan can enqueue it later.
+            self._log("deepcheck_enqueue_deferred", **context, sample_id=sample_id,
+                error_type=type(exc).__name__)
+        self._log("recording_state_transition", **context, item_status_before=previous_item_status,
+            item_status_after=item.status, sample_id=sample_id, sample_status=sample.status,
+            next_item_id=next_item.item_id if next_item else None,
+            next_item_status=next_item.status if next_item else None, action=response["action"])
+        self._log("complete_response_returned", **context, sample_id=sample_id, action=response["action"],
+            code=response["code"], total_complete_duration_ms=round((time.perf_counter() - complete_started_at) * 1000))
         return response, sample
 
     def submit_audio(self, item_id: str, session_id: str, contributor_id: str, duration_ms: int,
@@ -794,11 +947,42 @@ class VoiceTurkService:
         completed = sum(x.status in (RecordingItemStatus.REVIEW_PENDING, RecordingItemStatus.ACCEPTED) for x in items)
         return {"completed": completed, "total": len(items)}
 
+    def _assign_next_recording_item(self, session: RecordingSession,
+                                    completed_item_id: str) -> RecordingItem | None:
+        items = self._campaign("items", session.campaign_id)
+        assigned = next((value for value in items if value.item_id != completed_item_id and
+            value.status == RecordingItemStatus.ASSIGNED and value.assigned_to == session.contributor_id), None)
+        if assigned:
+            return assigned
+        candidate = next((value for value in items if value.status == RecordingItemStatus.OPEN), None)
+        if candidate is None:
+            candidate = next((value for value in items if value.status == RecordingItemStatus.NEED_RETAKE), None)
+        if candidate:
+            candidate.status, candidate.assigned_to, candidate.assigned_at = (
+                RecordingItemStatus.ASSIGNED, session.contributor_id, now())
+            self.repo.add("items", candidate)
+        return candidate
+
     def _fast_response(self, passed: bool, reason: str, message: str, metrics: dict[str, Any], sample_id: str | None,
-                       severity: str = "hard_fail", warnings: list[str] | None = None) -> dict[str, Any]:
-        return {"action": "CONTINUE_NEXT" if passed else "RETAKE_NOW", "reason_code": reason,
-            "severity": severity, "retry_same_item": not passed, "message_vi": message, "metrics": metrics,
-            "warnings": warnings or [], "sample_id": sample_id, "next_item_available": passed}
+                       severity: str = "hard_fail", warnings: list[str] | None = None,
+                       session: RecordingSession | None = None, item: RecordingItem | None = None,
+                       next_item: RecordingItem | None = None, code: str | None = None,
+                       previous_item_status: RecordingItemStatus | None = None) -> dict[str, Any]:
+        action = "CONTINUE_NEXT" if passed else "RETAKE_NOW"
+        response_code = code or ("FAST_CHECK_PASSED" if passed else "FAST_CHECK_FAILED")
+        if passed and next_item is None:
+            action, response_code = "SESSION_COMPLETED", "NO_MORE_ITEMS"
+            message = "Bạn đã hoàn thành phiên thu âm này."
+        debug = {"session_status": session.status if session else None,
+            "item_status": item.status if item else None, "reason_code": reason,
+            "previous_item_status": previous_item_status,
+            "next_item_status": next_item.status if next_item else None}
+        return {"action": action, "code": response_code, "reason_code": reason,
+            "severity": severity, "retry_same_item": not passed, "message_vi": message,
+            "session_id": session.session_id if session else None, "item_id": item.item_id if item else None,
+            "sample_id": sample_id, "next_item": self._item_dto(next_item) if next_item else None,
+            "next_item_available": next_item is not None, "metrics": metrics, "warnings": warnings or [],
+            "debug": debug}
 
     def _log(self, event: str, **fields: Any) -> None:
         logger.info(json.dumps({"event": event, **{key: value for key, value in fields.items() if value is not None}},

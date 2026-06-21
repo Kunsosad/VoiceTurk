@@ -7,7 +7,7 @@ VoiceTurk is a unified, coach-led Vietnamese prosody recording and dataset packa
 - FastAPI modular monolith with seven core domain entities and ports/adapters boundaries.
 - SQLite persistence; local object storage by default, MinIO through an S3-compatible adapter.
 - Deterministic decoded-audio FastCheck, automatic technical DeepCheck, self-review, and accepted-only dataset export.
-- React/Vite unified Studio with Agora RTC when configured and Browser TTS/text fallback.
+- React/Vite unified Studio with strict Agora Agent Studio mode or explicitly selected Browser TTS.
 - Agora owns realtime experience only. Object storage owns bytes only. Backend owns all business state.
 
 ## Start locally
@@ -50,11 +50,26 @@ Backend:
 
 ```env
 REALTIME_PROVIDER=agora
+ALLOW_COACH_FALLBACK=false
 AGORA_APP_ID=your-app-id
 AGORA_APP_CERTIFICATE=your-certificate
+AGORA_CUSTOMER_ID=your-rest-customer-id
+AGORA_CUSTOMER_SECRET=your-rest-customer-secret
+AGORA_AGENT_NAME=your-published-agent-name
+AGORA_AGENT_PIPELINE_ID=your-studio-agent-id
 ```
 
-The backend session response is the provider source of truth; no frontend provider flag is required. With Agora configured, the browser joins RTC, publishes its microphone, subscribes to remote audio, and reports the actual join/publish result in the Recording Studio. Browser TTS remains the coach voice until a ConvoAI lifecycle has been runtime-verified. If Agora is disabled or RTC join fails, recording and Browser TTS/text continue. Never commit credentials. See `docs/07-agora-realtime.md`.
+The backend session response is the provider source of truth. It creates one RTC channel and separate contributor/agent tokens, then starts the published Agent Studio pipeline through the server-side Conversational AI `/join` API. The browser joins that exact channel, publishes its microphone, subscribes to remote audio, and only reports Agent Studio connected after the expected agent UID is observed. In strict mode, Agent start/detection failures are shown as errors and never speak through Browser TTS. Set `ALLOW_COACH_FALLBACK=true` only when that degradation is explicitly wanted. Never commit credentials. See `docs/07-agora-realtime.md`.
+
+Live Agent Studio probe:
+
+```powershell
+python services/api/scripts/probe_agora_agent_join.py
+python services/api/scripts/probe_agora_agent_join.py --print-client-token
+npm --prefix apps/web run dev
+```
+
+Open `http://localhost:5173/agora-agent-probe.html`, enter the emitted values, allow microphone access, and confirm `AGENT_JOINED` followed by `AGENT_AUDIO_SUBSCRIBED`. The token-printing flag is opt-in because RTC tokens are hidden by default.
 
 ## MinIO
 

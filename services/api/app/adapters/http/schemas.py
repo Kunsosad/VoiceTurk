@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -74,6 +74,7 @@ class UploadInitRequest(BaseModel):
     filename: str
     content_type: str
     size_bytes: int = Field(ge=0)
+    client_attempt_id: str | None = Field(default=None, max_length=120)
 
 
 class UploadCompleteRequest(BaseModel):
@@ -82,18 +83,13 @@ class UploadCompleteRequest(BaseModel):
     item_id: str
     object_key: str
     client_metrics: dict[str, Any] = {}
+    client_attempt_id: str | None = Field(default=None, max_length=120)
 
 
 class AgoraTokenRequest(BaseModel):
     channel: str
     uid: str
     role: str = "publisher"
-
-
-class CoachSpeakRequest(BaseModel):
-    kind: Literal["instruction", "feedback"] = "instruction"
-    message: str = Field(min_length=1, max_length=1000)
-    feedback_context: dict[str, Any] | None = None
 
 
 class RetakeStartRequest(BaseModel):

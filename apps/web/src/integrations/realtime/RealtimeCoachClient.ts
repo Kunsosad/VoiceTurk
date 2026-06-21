@@ -5,7 +5,10 @@ export type CoachJoinResult = {
   transport: 'agora_rtc' | 'browser'
   rtcJoined: boolean
   micPublished: boolean
-  voiceProvider: 'agora_convoai' | 'browser_tts' | 'browser_tts_fallback' | 'text_only'
+  voiceProvider: 'agora_agent' | 'agora_agent_failed' | 'browser_tts' | 'browser_tts_fallback' | 'text_only'
+  agentDetected?: boolean
+  agentAudioSubscribed?: boolean
+  warning?: string
 }
 export interface RealtimeCoachClient {
   joinSession(input: {session_id: string; realtime: RealtimeInfo}): Promise<CoachJoinResult>

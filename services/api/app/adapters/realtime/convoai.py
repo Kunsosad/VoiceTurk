@@ -1,158 +1,185 @@
 import json
 import logging
-from threading import RLock
-from typing import Any
+import zlib
+from typing import Any, Callable
 
-from agora_agent import Agent, Agora, Area
-from agora_agent.agentkit import DeepgramSTT, MiniMaxTTS, OpenAI
+import httpx
 
 from app.ports.providers import CoachVoicePort, CoachVoiceResult
 
+
 logger = logging.getLogger("voiceturk.realtime")
 
-VOICE_COACH_PROMPT = """You are VoiceTurk's Vietnamese recording coach.
-Your job is to guide the contributor to read the provided sentence naturally.
-You must not decide whether a sample is accepted, rejected, or needs retake.
-Backend quality pipeline is the source of truth.
-Only speak the current instruction or feedback provided by VoiceTurk.
-Do not invent new failure reasons.
-Keep Vietnamese feedback short, friendly, and under 2 sentences."""
 
+class AgoraAgentStudioAdapter(CoachVoicePort):
+    """Starts a published Agent Studio pipeline in a VoiceTurk RTC channel."""
 
-class AgoraConvoAIAdapter(CoachVoicePort):
-    """Official agora-agents lifecycle adapter derived from the verified quickstart."""
-
-    def __init__(self, app_id: str, app_certificate: str, agent_uid: str = "123456") -> None:
+    def __init__(self, app_id: str, customer_id: str, customer_secret: str, agent_name: str,
+                 pipeline_id: str, agent_rtc_uid_base: int = 900000,
+                 remote_rtc_uids: list[str] | None = None, region: str = "",
+                 timeout_seconds: float = 10.0,
+                 app_certificate_configured: bool = True,
+                 requester: Callable[..., httpx.Response] | None = None) -> None:
         self.app_id = app_id
-        self.app_certificate = app_certificate
-        self.agent_uid = agent_uid
-        self._lock = RLock()
-        self._session_agents: dict[str, str] = {}
-        self._sessions: dict[str, Any] = {}
-        self._client = Agora(area=Area.US, app_id=app_id, app_certificate=app_certificate) \
-            if self.configured() else None
+        self.customer_id = customer_id
+        self.customer_secret = customer_secret
+        self.agent_name = agent_name
+        self.pipeline_id = pipeline_id
+        self.agent_rtc_uid_base = agent_rtc_uid_base
+        self.remote_rtc_uids = remote_rtc_uids or ["*"]
+        self.region = region
+        self.timeout_seconds = timeout_seconds
+        self.app_certificate_configured = app_certificate_configured
+        self._requester = requester or httpx.post
 
     def configured(self) -> bool:
-        return bool(self.app_id and self.app_certificate)
+        return bool(self.app_id and self.app_certificate_configured and self.customer_id and self.customer_secret and
+                    self.agent_name and self.pipeline_id)
 
-    def start_coach_session(self, recording_session_id: str, channel_name: str, contributor_uid: str,
-                            task_context: dict[str, Any]) -> CoachVoiceResult:
-        if not self._client:
-            return self._fallback("MISSING_AGORA_CREDENTIALS")
-        safe_context = {key: task_context.get(key) for key in
-                        ("transcript", "target_emotion", "context_brief", "instruction")}
-        instruction = str(safe_context.get("instruction") or "Hãy đọc câu trên màn hình.")
-        instructions = f"{VOICE_COACH_PROMPT}\n\nCurrent task context:\n{json.dumps(safe_context, ensure_ascii=False)}"
+    def missing_config(self) -> list[str]:
+        values = {
+            "AGORA_APP_ID": self.app_id,
+            "AGORA_APP_CERTIFICATE": "configured" if self.app_certificate_configured else "",
+            "AGORA_CUSTOMER_ID": self.customer_id,
+            "AGORA_CUSTOMER_SECRET": self.customer_secret,
+            "AGORA_AGENT_NAME": self.agent_name,
+            "AGORA_AGENT_PIPELINE_ID": self.pipeline_id,
+        }
+        return [name for name, value in values.items() if not value]
+
+    def agent_rtc_uid(self, session_id: str, contributor_rtc_uid: str) -> str:
+        # Agora Agent Studio /join requires agent_rtc_uid in signed 32-bit range:
+        # 0 <= uid <= 2147483647
+        max_agora_uid = 2_147_483_647
+
+        base = int(self.agent_rtc_uid_base or 900000)
+        if base < 1 or base >= max_agora_uid:
+            base = 900000
+
+        # Keep the generated uid in a small safe range.
+        # Same UID can be reused across different channels, so huge hash space is unnecessary.
+        span = min(1_000_000, max_agora_uid - base)
+        offset = zlib.crc32(session_id.encode("utf-8")) % span
+        uid = base + offset
+
         try:
-            agent = (Agent(client=self._client, instructions=instructions, greeting=instruction,
-                failure_message="Coach tạm thời chưa thể nói. Hãy đọc câu trên màn hình.", max_history=15,
-                advanced_features={"enable_rtm": True},
-                parameters={"audio_scenario": "chorus", "data_channel": "rtm",
-                            "enable_error_message": True, "enable_metrics": True})
-                .with_stt(DeepgramSTT(model="nova-3", language="vi"))
-                .with_llm(OpenAI(model="gpt-4o-mini", greeting_message=instruction,
-                    failure_message="Coach tạm thời chưa thể nói.", max_history=15,
-                    params={"max_tokens": 256, "temperature": 0.3, "top_p": 0.9}))
-                .with_tts(MiniMaxTTS(model="speech_2_6_turbo", voice_id="English_captivating_female1")))
-            session = agent.create_session(channel=channel_name, agent_uid=self.agent_uid,
-                remote_uids=[contributor_uid], name=f"vt_{recording_session_id[-12:]}", idle_timeout=120,
-                enable_string_uid=True, expires_in=3600, debug=False)
-            agent_id = session.start()
-            if not agent_id:
-                return self._fallback("AGENT_START_EMPTY_ID")
-            with self._lock:
-                self._session_agents[recording_session_id] = agent_id
-                self._sessions[recording_session_id] = session
-            return CoachVoiceResult(True, "agora_convoai", "starting", coach_session_id=agent_id,
-                                    agent_uid=self.agent_uid)
-        except Exception as exc:
-            self._log_failure("coach_start_failed", recording_session_id, exc)
-            return self._fallback("AGENT_START_FAILED")
+            contributor_uid = int(contributor_rtc_uid)
+        except (TypeError, ValueError):
+            contributor_uid = None
 
-    def get_coach_status(self, recording_session_id: str,
-                         coach_session_id: str | None = None) -> CoachVoiceResult:
-        agent_id = self._agent_id(recording_session_id, coach_session_id)
-        if not self._client or not agent_id:
-            return self._fallback("AGENT_SESSION_NOT_FOUND")
-        session = self._session_for(recording_session_id)
-        if not session:
-            return self._fallback("AGENT_SESSION_NOT_IN_PROCESS", agent_id)
+        if uid == contributor_uid:
+            uid = base + ((offset + 1) % span)
+
+        return str(uid)
+
+    def join_agent(self, session_id: str, channel: str, agent_rtc_uid: str,
+                   token: str, contributor_rtc_uid: str | None = None) -> CoachVoiceResult:
+        if not self.configured():
+            missing = self.missing_config()
+            message = f"Agora Agent Studio config is missing: {', '.join(missing)}"
+            self._log("agora.agent.join.failed", session_id=session_id, channel=channel,
+                      agent_rtc_uid=agent_rtc_uid or None,
+                      error_code="MISSING_AGORA_AGENT_CONFIG", error_message=message)
+            return CoachVoiceResult(False, "agora_agent", "config_missing", message,
+                agent_rtc_uid or None, error_code="MISSING_AGORA_AGENT_CONFIG",
+                response_summary={"missing": missing})
+        remote_rtc_uids = [str(contributor_rtc_uid)] if contributor_rtc_uid else self.remote_rtc_uids
+        properties: dict[str, Any] = {"channel": channel, "agent_rtc_uid": agent_rtc_uid,
+            "remote_rtc_uids": remote_rtc_uids, "token": token}
+        runtime_name = self._runtime_name(session_id)
+        payload = {"name": runtime_name, "pipeline_id": self.pipeline_id,
+                   "properties": properties}
+        url = f"https://api.agora.io/api/conversational-ai-agent/v2/projects/{self.app_id}/join"
+        self._log("agora.agent.join.request", session_id=session_id, channel=channel,
+                  contributor_rtc_uid=contributor_rtc_uid, agent_rtc_uid=agent_rtc_uid,
+                  remote_rtc_uids=remote_rtc_uids, pipeline_id=self.pipeline_id,
+                  agent_name=runtime_name)
         try:
-            info = session.get_info()
-            platform_status = str(getattr(info, "status", "") or "").upper()
-            status = {"RUNNING": "ready", "STARTING": "starting", "STOPPING": "stopping",
-                      "STOPPED": "stopped", "FAILED": "error"}.get(platform_status, "starting")
-            return CoachVoiceResult(status in {"ready", "starting"}, "agora_convoai", status,
-                                    coach_session_id=agent_id, agent_uid=self.agent_uid)
+            response = self._requester(url, json=payload,
+                auth=httpx.BasicAuth(self.customer_id, self.customer_secret),
+                timeout=self.timeout_seconds, headers={"Content-Type": "application/json"})
+            body = self._response_json(response)
+            body_summary = self._sanitize_body(body)
+            self._log("agora.agent.join.response", session_id=session_id,
+                      http_status=response.status_code, body_summary=body_summary)
+            if 200 <= response.status_code < 300:
+                response_id = self._response_id(body)
+                self._log("agora.agent.join.success", session_id=session_id, channel=channel,
+                          contributor_rtc_uid=contributor_rtc_uid, agent_rtc_uid=agent_rtc_uid,
+                          remote_rtc_uids=remote_rtc_uids, agent_id=response_id)
+                return CoachVoiceResult(True, "agora_agent", "joined",
+                    "Agora Agent Studio join request accepted.", agent_rtc_uid, response_id,
+                    http_status=response.status_code, response_summary=body_summary)
+            error_code = str(body.get("error_code") or body.get("code") or body.get("reason") or
+                             f"HTTP_{response.status_code}")
+            message = str(body.get("message") or body.get("detail") or body.get("error") or
+                          "Agora Agent Studio join failed.")
+            self._log("agora.agent.join.failed", session_id=session_id, channel=channel,
+                contributor_rtc_uid=contributor_rtc_uid, agent_rtc_uid=agent_rtc_uid,
+                remote_rtc_uids=remote_rtc_uids, http_status=response.status_code,
+                error_code=error_code, error_message=message[:300])
+            return CoachVoiceResult(False, "agora_agent", "failed", message[:300], agent_rtc_uid,
+                error_code=error_code, http_status=response.status_code,
+                response_summary=body_summary)
         except Exception as exc:
-            self._log_failure("coach_status_failed", recording_session_id, exc)
-            return self._fallback("AGENT_STATUS_FAILED", agent_id)
-
-    def speak_instruction(self, recording_session_id: str, instruction_context: dict[str, Any],
-                          coach_session_id: str | None = None) -> CoachVoiceResult:
-        return self._speak(recording_session_id, instruction_context.get("instruction"), coach_session_id)
-
-    def speak_feedback(self, recording_session_id: str, feedback_context: dict[str, Any],
-                       coach_session_id: str | None = None) -> CoachVoiceResult:
-        return self._speak(recording_session_id, feedback_context.get("message_vi"), coach_session_id)
-
-    def stop_coach_session(self, recording_session_id: str,
-                           coach_session_id: str | None = None) -> CoachVoiceResult:
-        agent_id = self._agent_id(recording_session_id, coach_session_id)
-        if not self._client or not agent_id:
-            return CoachVoiceResult(False, "agora_convoai", "stopped", coach_session_id=agent_id,
-                                    agent_uid=self.agent_uid)
-        try:
-            session = self._session_for(recording_session_id)
-            if session:
-                session.stop()
-            else:
-                self._client.stop_agent(agent_id)
-            with self._lock:
-                self._session_agents.pop(recording_session_id, None)
-                self._sessions.pop(recording_session_id, None)
-            return CoachVoiceResult(True, "agora_convoai", "stopped", coach_session_id=agent_id,
-                                    agent_uid=self.agent_uid)
-        except Exception as exc:
-            self._log_failure("coach_stop_failed", recording_session_id, exc)
-            return self._fallback("AGENT_STOP_FAILED", agent_id)
-
-    def _speak(self, recording_session_id: str, text: Any,
-               coach_session_id: str | None) -> CoachVoiceResult:
-        agent_id = self._agent_id(recording_session_id, coach_session_id)
-        if not self._client or not agent_id or not isinstance(text, str) or not text.strip():
-            return self._fallback("AGENT_SPEAK_CONTEXT_INVALID", agent_id)
-        session = self._session_for(recording_session_id)
-        if not session:
-            return self._fallback("AGENT_SESSION_NOT_IN_PROCESS", agent_id)
-        try:
-            session.say(text.strip(), priority="INTERRUPT", interruptable=False)
-            return CoachVoiceResult(True, "agora_convoai", "spoken", coach_session_id=agent_id,
-                                    agent_uid=self.agent_uid)
-        except Exception as exc:
-            self._log_failure("coach_speak_failed", recording_session_id, exc)
-            return self._fallback("AGENT_SPEAK_FAILED", agent_id)
-
-    def _agent_id(self, recording_session_id: str, supplied: str | None) -> str | None:
-        if supplied:
-            return supplied
-        with self._lock:
-            return self._session_agents.get(recording_session_id)
-
-    def _session_for(self, recording_session_id: str) -> Any | None:
-        with self._lock:
-            return self._sessions.get(recording_session_id)
+            error_code = "AGORA_AGENT_JOIN_TIMEOUT" if isinstance(exc, httpx.TimeoutException) \
+                else "AGORA_AGENT_JOIN_REQUEST_FAILED"
+            self._log("agora.agent.join.failed", session_id=session_id, channel=channel,
+                contributor_rtc_uid=contributor_rtc_uid, agent_rtc_uid=agent_rtc_uid,
+                remote_rtc_uids=remote_rtc_uids, error_code=error_code,
+                error_message=f"{type(exc).__name__}: {str(exc)[:240]}")
+            return CoachVoiceResult(False, "agora_agent", "failed",
+                "Agora Agent Studio could not join the RTC channel.", agent_rtc_uid,
+                error_code=error_code)
 
     @staticmethod
-    def _fallback(message: str, agent_id: str | None = None) -> CoachVoiceResult:
-        return CoachVoiceResult(False, "agora_convoai", "fallback", message, agent_id)
+    def _response_json(response: httpx.Response) -> dict[str, Any]:
+        try:
+            value = response.json()
+            return value if isinstance(value, dict) else {}
+        except (json.JSONDecodeError, ValueError):
+            return {}
 
     @staticmethod
-    def _log_failure(event: str, recording_session_id: str, exc: Exception) -> None:
-        logger.warning(json.dumps({"event": event, "recording_session_id": recording_session_id,
-                                  "error_type": type(exc).__name__}))
+    def _response_id(body: dict[str, Any]) -> str | None:
+        nested = body.get("data") if isinstance(body.get("data"), dict) else {}
+        value = (body.get("agent_id") or body.get("agent_session_id") or body.get("id") or
+                 nested.get("agent_id") or nested.get("agent_session_id") or nested.get("id"))
+        return str(value) if value is not None else None
+
+    def _runtime_name(self, session_id: str) -> str:
+        suffix = session_id.rsplit("_", 1)[-1][-12:]
+        return f"{self.agent_name[:48]}-{suffix}"
+
+    @classmethod
+    def _sanitize_body(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): cls._sanitize_body(item) for key, item in value.items()
+                    if not any(marker in str(key).lower()
+                               for marker in ("token", "authorization", "secret", "password"))}
+        if isinstance(value, list):
+            return [cls._sanitize_body(item) for item in value[:20]]
+        if isinstance(value, str):
+            return value[:500]
+        return value
+
+    @staticmethod
+    def _log(event: str, **fields: Any) -> None:
+        logger.info(json.dumps({"event": event, **{key: value for key, value in fields.items()
+            if value is not None}}, ensure_ascii=False))
 
 
-class AgoraConvoAIUnavailableAdapter(AgoraConvoAIAdapter):
-    def __init__(self) -> None:
-        super().__init__("", "")
+class AgoraConvoAIUnavailableAdapter(CoachVoicePort):
+    def configured(self) -> bool:
+        return False
+
+    def agent_rtc_uid(self, session_id: str, contributor_rtc_uid: str) -> str:
+        del session_id
+        return "900001" if str(contributor_rtc_uid) == "900000" else "900000"
+
+    def join_agent(self, session_id: str, channel: str, agent_rtc_uid: str,
+                   token: str, contributor_rtc_uid: str | None = None) -> CoachVoiceResult:
+        del session_id, channel, token
+        return CoachVoiceResult(False, "agora_agent", "config_missing",
+            "Agora Agent Studio config is missing.", agent_rtc_uid or None,
+            error_code="MISSING_AGORA_AGENT_CONFIG")

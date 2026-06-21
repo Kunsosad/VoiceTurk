@@ -94,21 +94,31 @@ FastCheck fail:
 
 {
 "action": "RETAKE_NOW",
+"code": "FAST_CHECK_FAILED",
 "reason_code": "AUDIO_TOO_SHORT",
 "message_vi": "Audio hơi ngắn, bạn đọc lại câu này rõ hơn nhé.",
 "retry_same_item": true,
-"sample_id": null
+"sample_id": null,
+"next_item": null
 }
 
 FastCheck pass:
 
 {
 "action": "CONTINUE_NEXT",
+"code": "FAST_CHECK_PASSED",
 "reason_code": "FAST_CHECK_PASSED",
 "message_vi": "Ổn rồi, mình chuyển sang câu tiếp theo nhé.",
 "sample_id": "sample_001",
-"next_item_available": true
+"retry_same_item": false,
+"next_item": {
+  "item_id": "item_002",
+  "status": "ASSIGNED",
+  "transcript": "Tôi muốn kiểm tra đơn hàng."
 }
+}
+
+When no item remains, upload completion returns `SESSION_COMPLETED` with code `NO_MORE_ITEMS` and `next_item: null`. Session/item state conflicts use HTTP 409 with action `SYNC_SESSION`, a machine-readable code such as `SESSION_NOT_READY_FOR_UPLOAD` or `ITEM_NOT_READY_FOR_UPLOAD`, Vietnamese guidance, and safe current/expected state in `debug`.
 
 6. Review Request
 

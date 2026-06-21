@@ -54,6 +54,41 @@ def upload(client: TestClient, session: dict, item_id: str, audio: bytes) -> dic
         "client_metrics": {"duration_ms": 1300, "rms_dbfs": -15}}).json()
 
 
+def test_recording_state_conflicts_are_http_409_contracts(tmp_path: Path):
+    service = make_service(tmp_path)
+    app.dependency_overrides[get_service] = lambda: service
+    client = TestClient(app)
+    try:
+        seeded = client.post("/demo/seed-unified-user").json()
+        login = client.post("/auth/login", json={"email": "buyer@voiceturk.demo", "password": "VoiceTurk123!"})
+        client.headers["authorization"] = f"Bearer {login.json()['access_token']}"
+        missing = client.post("/audio/uploads/init", json={"session_id": "missing", "item_id": "missing",
+            "filename": "recording.wav", "content_type": "audio/wav", "size_bytes": 1000})
+        assert missing.status_code == 404
+        assert missing.json()["code"] == "SESSION_NOT_FOUND"
+
+        started = client.post("/recording-sessions/start", json={"campaign_id": seeded["campaign_id"]}).json()
+        session = service.repo.get("sessions", started["session_id"])
+        item = service.repo.get("items", started["items"][0]["item_id"])
+        payload = {"session_id": session.session_id, "item_id": item.item_id, "filename": "recording.wav",
+            "content_type": "audio/wav", "size_bytes": 1000}
+        session.status = "STARTED"
+        not_active = client.post("/audio/uploads/init", json=payload)
+        assert not_active.status_code == 409
+        assert not_active.json()["code"] == "SESSION_NOT_READY_FOR_UPLOAD"
+        assert not_active.json()["action"] == "SYNC_SESSION"
+        assert not_active.json()["debug"]["session_status"] == "STARTED"
+
+        session.status = "ACTIVE"
+        item.status = "OPEN"
+        not_assigned = client.post("/audio/uploads/init", json=payload)
+        assert not_assigned.status_code == 409
+        assert not_assigned.json()["code"] == "ITEM_NOT_READY_FOR_UPLOAD"
+        assert not_assigned.json()["debug"]["expected_item_status"] == "ASSIGNED"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_unified_dual_pipeline(tmp_path: Path):
     service = make_service(tmp_path)
     app.dependency_overrides[get_service] = lambda: service
@@ -76,10 +111,10 @@ def test_unified_dual_pipeline(tmp_path: Path):
         # contributor_id is now derived from the JWT token, not the request body
         session = client.post("/recording-sessions/start", json={"campaign_id": seeded["campaign_id"]}).json()
         assert session["realtime"]["provider"] == "browser_tts"
-        first, second = session["items"][:2]
+        first = session["items"][0]
         first_action = client.get(f"/recording-sessions/{session['session_id']}/next-action").json()
         assert first_action["action"] == "START_ITEM"
-        assert first_action["debug"]["assigned_count"] == 20
+        assert first_action["debug"]["assigned_count"] == 1
         assert first_action["debug"]["submitted_in_session_count"] == 0
 
         missing_slot = client.post("/audio/uploads/init", json={"session_id": session["session_id"],
@@ -97,6 +132,8 @@ def test_unified_dual_pipeline(tmp_path: Path):
 
         passed = upload(client, session, first["item_id"], wav_fixture())
         assert passed["action"] == "CONTINUE_NEXT" and passed["metrics"]["speech_ratio"] > 0.9
+        second = passed["next_item"]
+        assert second["status"] == "ASSIGNED"
         assert service.repo.get("samples", passed["sample_id"]).status == "CHECKING"
         assert client.get(f"/recording-sessions/{session['session_id']}/next-action").json()["action"] == "START_ITEM"
         deep = client.post("/deep-check/run-pending").json()

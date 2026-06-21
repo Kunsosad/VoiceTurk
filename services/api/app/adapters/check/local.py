@@ -31,9 +31,10 @@ class UnsupportedAudioFormatError(ValueError):
 
 class RuleBasedFastCheckAdapter(FastCheckPort):
     def __init__(self, **thresholds: Any) -> None:
-        self.t = {"min_duration_ms": 900, "max_duration_ms": 15000, "min_rms_dbfs": -45.0,
-            "max_rms_dbfs": -8.0, "min_peak_dbfs": -35.0, "clipping_ratio_max": 0.02,
-            "silence_ratio_max": 0.65, "speech_ratio_min": 0.30, "leading_silence_max_ms": 1200,
+        self.t = {"min_duration_ms": 600, "max_duration_ms": 30000, "min_rms_dbfs": -50.0,
+            "max_rms_dbfs": -8.0, "min_peak_dbfs": -50.0, "clipping_ratio_max": 0.03,
+            "silence_ratio_max": 0.85, "speech_ratio_min": 0.15, "activity_threshold_dbfs": -55.0,
+            "leading_silence_max_ms": 1200,
             "trailing_silence_max_ms": 1800, "min_file_size_bytes": 1000} | thresholds
 
     def check(self, data: bytes, filename: str, content_type: str | None,
@@ -55,10 +56,9 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
         hard_checks = [
             (metrics["duration_ms"] < self.t["min_duration_ms"], "AUDIO_TOO_SHORT"),
             (metrics["duration_ms"] > self.t["max_duration_ms"], "AUDIO_TOO_LONG"),
-            (metrics["rms_dbfs"] < self.t["min_rms_dbfs"] or metrics["peak_dbfs"] < self.t["min_peak_dbfs"], "VOLUME_TOO_LOW"),
+            (metrics["peak_dbfs"] <= -85.0, "NO_SPEECH_DETECTED"),
+            (metrics["rms_active_dbfs"] < self.t["min_rms_dbfs"], "VOLUME_TOO_LOW"),
             (metrics["clipping_ratio"] > self.t["clipping_ratio_max"], "CLIPPING_TOO_HIGH"),
-            (metrics["rms_dbfs"] > self.t["max_rms_dbfs"], "VOLUME_TOO_HIGH"),
-            (metrics["silence_ratio"] > self.t["silence_ratio_max"], "TOO_MUCH_SILENCE"),
             (metrics["speech_ratio"] < self.t["speech_ratio_min"], "NO_SPEECH_DETECTED"),
         ]
         for failed, reason in hard_checks:
@@ -70,8 +70,14 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
             warnings.append("LONG_LEADING_SILENCE")
         if metrics["trailing_silence_ms"] > self.t["trailing_silence_max_ms"]:
             warnings.append("LONG_TRAILING_SILENCE")
-        if metrics["rms_dbfs"] < -35:
+        if metrics["rms_active_dbfs"] < -42:
             warnings.append("SLIGHTLY_LOW_VOLUME")
+        if 0.15 <= metrics["speech_ratio"] < 0.30:
+            warnings.append("BORDERLINE_SPEECH_ACTIVITY")
+        if metrics["silence_ratio"] > 0.65:
+            warnings.append("LONG_SILENCE")
+        if 0.02 < metrics["clipping_ratio"] <= self.t["clipping_ratio_max"]:
+            warnings.append("BORDERLINE_CLIPPING")
         metrics["fast_check_score"] = self._score(metrics) - min(0.15, len(warnings) * 0.05)
         return FastCheckResult(True, "FAST_CHECK_PASSED", MESSAGES["FAST_CHECK_PASSED"],
                                "warning" if warnings else "passed", metrics, warnings)
@@ -92,7 +98,7 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
         active = []
         silence_rms = []
         speech_rms = []
-        threshold = 32768 * (10 ** (-45 / 20))
+        threshold = 32768 * (10 ** (self.t["activity_threshold_dbfs"] / 20))
         for start in range(0, len(mono), frame_size):
             chunk = mono[start:start + frame_size]
             chunk_rms = math.sqrt(sum(value * value for value in chunk) / len(chunk))
@@ -106,6 +112,7 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
         noise_level = sum(silence_rms) / len(silence_rms) if silence_rms else 1
         return {"duration_ms": round(len(mono) / rate * 1000), "sample_rate": rate, "channels": channels,
             "rms_dbfs": round(db(rms), 2), "peak_dbfs": round(db(peak), 2),
+            "rms_active_dbfs": round(db(speech_level), 2),
             "clipping_ratio": round(sum(abs(value) >= 32439 for value in mono) / len(mono), 5),
             "silence_ratio": round(1 - speech_ratio, 4), "speech_ratio": round(speech_ratio, 4),
             "speech_duration_ms": round(len(mono) / rate * 1000 * speech_ratio),
