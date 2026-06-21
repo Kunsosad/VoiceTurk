@@ -1,0 +1,4 @@
+interface:
+  display_name: "VoiceTurk UI/UX Studio"
+  short_description: "Build polished VoiceTurk product interfaces"
+  default_prompt: "Use $voiceturk-ui-ux-studio to design and implement a polished VoiceTurk workflow."

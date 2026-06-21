@@ -1,5 +1,6 @@
 import pickle
 import sqlite3
+from dataclasses import MISSING, fields, is_dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -33,14 +34,28 @@ class SQLiteRepository(RepositoryPort):
     def get(self, kind: str, entity_id: str) -> Any | None:
         with self.lock:
             row = self.connection.execute("SELECT payload FROM entities WHERE kind=? AND entity_id=?", (kind, entity_id)).fetchone()
-        return pickle.loads(row[0]) if row else None
+        return self._hydrate(pickle.loads(row[0])) if row else None
 
     def list(self, kind: str) -> list[Any]:
         with self.lock:
             rows = self.connection.execute("SELECT payload FROM entities WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
-        return [pickle.loads(row[0]) for row in rows]
+        return [self._hydrate(pickle.loads(row[0])) for row in rows]
 
     def delete(self, kind: str, entity_id: str) -> None:
         with self.lock:
             self.connection.execute("DELETE FROM entities WHERE kind=? AND entity_id=?", (kind, entity_id))
             self.connection.commit()
+
+    @staticmethod
+    def _hydrate(entity: Any) -> Any:
+        """Apply newly-added dataclass defaults to trusted local records from older MVP versions."""
+        if not is_dataclass(entity):
+            return entity
+        for value in fields(entity):
+            if hasattr(entity, value.name):
+                continue
+            if value.default is not MISSING:
+                setattr(entity, value.name, value.default)
+            elif value.default_factory is not MISSING:
+                setattr(entity, value.name, value.default_factory())
+        return entity

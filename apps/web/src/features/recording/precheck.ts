@@ -1,9 +1,55 @@
 import type { AudioMetrics } from '../../types/domain'
 
-export type PrecheckCode = 'MIC_PERMISSION_DENIED'|'MIC_NOT_FOUND'|'MIC_TRACK_FAILED'|'MIC_MUTED'|'NO_SPEECH_DETECTED'|'AUDIO_BLOB_EMPTY'|'AUDIO_TOO_SHORT'|'AUDIO_TOO_LONG'|'VOLUME_TOO_LOW'|'TOO_MUCH_SILENCE'|'CLIPPING_TOO_HIGH'|'UPLOAD_FAILED'
-export const PRECHECK = {minDurationMs: 900, maxDurationMs: 15000, minRmsDbfs: -45, minPeakDbfs: -35, clippingMax: .02, silenceMax: .65, noSpeechTimeoutMs: 7000, silenceStopMs: 1500}
-export const COACH_MESSAGES: Record<PrecheckCode,string> = {
-  MIC_PERMISSION_DENIED:'Bạn chưa cấp quyền micro. Hãy bật quyền micro rồi thử lại nhé.', MIC_NOT_FOUND:'Mình chưa tìm thấy micro. Bạn kiểm tra thiết bị thu âm rồi thử lại nhé.', MIC_TRACK_FAILED:'Micro chưa khởi động được. Bạn kiểm tra thiết bị rồi thử lại nhé.', MIC_MUTED:'Micro đang tắt. Hãy bật micro rồi đọc lại nhé.', NO_SPEECH_DETECTED:'Mình chưa nghe thấy bạn nói. Khi sẵn sàng, hãy đọc câu trên màn hình nhé.', AUDIO_BLOB_EMPTY:'Bản ghi chưa có dữ liệu. Bạn thử ghi lại nhé.', AUDIO_TOO_SHORT:'Audio hơi ngắn, bạn đọc lại câu này rõ hơn nhé.', AUDIO_TOO_LONG:'Audio hơi dài. Bạn chỉ đọc đúng câu trên màn hình thôi nhé.', VOLUME_TOO_LOW:'Âm thanh hơi nhỏ. Bạn đọc lại to hơn một chút nhé.', TOO_MUCH_SILENCE:'Có hơi nhiều khoảng im lặng. Bạn đọc lại liền mạch hơn nhé.', CLIPPING_TOO_HIGH:'Âm thanh có vẻ bị vỡ tiếng. Bạn nói xa micro hơn một chút rồi đọc lại nhé.', UPLOAD_FAILED:'Upload bị lỗi mạng. Mình sẽ giữ nguyên câu này để bạn gửi lại.'}
+export type PrecheckCode =
+  | 'MIC_PERMISSION_DENIED'
+  | 'MIC_NOT_FOUND'
+  | 'MIC_TRACK_FAILED'
+  | 'MIC_MUTED'
+  | 'NO_SPEECH_DETECTED'
+  | 'AUDIO_BLOB_EMPTY'
+  | 'AUDIO_TOO_SHORT'
+  | 'AUDIO_TOO_LONG'
+  | 'VOLUME_TOO_LOW'
+  | 'TOO_MUCH_SILENCE'
+  | 'CLIPPING_TOO_HIGH'
+  | 'UPLOAD_FAILED'
+
+export const PRECHECK = {
+  minDurationMs: 900,
+  maxDurationMs: 15000,
+  minRmsDbfs: -45,
+  minPeakDbfs: -35,
+  clippingMax: 0.02,
+  silenceMax: 0.65,
+  noSpeechTimeoutMs: 7000,
+  silenceStopMs: 1500,
+}
+
+export const COACH_MESSAGES: Record<PrecheckCode, string> = {
+  MIC_PERMISSION_DENIED: 'Bạn chưa cấp quyền micro. Hãy bật quyền micro rồi thử lại nhé.',
+  MIC_NOT_FOUND: 'Mình chưa tìm thấy micro. Bạn kiểm tra thiết bị thu âm rồi thử lại nhé.',
+  MIC_TRACK_FAILED: 'Micro chưa khởi động được. Bạn kiểm tra thiết bị rồi thử lại nhé.',
+  MIC_MUTED: 'Micro đang tắt. Hãy bật micro rồi đọc lại nhé.',
+  NO_SPEECH_DETECTED: 'Mình chưa nghe thấy bạn nói. Khi sẵn sàng, hãy đọc câu trên màn hình nhé.',
+  AUDIO_BLOB_EMPTY: 'Bản ghi chưa có dữ liệu. Bạn thử ghi lại nhé.',
+  AUDIO_TOO_SHORT: 'Audio hơi ngắn, bạn đọc lại câu này rõ hơn nhé.',
+  AUDIO_TOO_LONG: 'Audio hơi dài. Bạn chỉ đọc đúng câu trên màn hình thôi nhé.',
+  VOLUME_TOO_LOW: 'Âm thanh hơi nhỏ. Bạn đọc lại to hơn một chút nhé.',
+  TOO_MUCH_SILENCE: 'Có hơi nhiều khoảng im lặng. Bạn đọc lại liền mạch hơn nhé.',
+  CLIPPING_TOO_HIGH: 'Âm thanh có vẻ bị vỡ tiếng. Bạn nói xa micro hơn một chút rồi đọc lại nhé.',
+  UPLOAD_FAILED: 'Upload bị lỗi mạng. Mình sẽ giữ nguyên câu này để bạn gửi lại.',
+}
+
 export function precheck(blob: Blob, metrics: AudioMetrics): PrecheckCode | null {
-  if (!blob.size) return 'AUDIO_BLOB_EMPTY'; if (metrics.duration_ms < PRECHECK.minDurationMs) return 'AUDIO_TOO_SHORT'; if (metrics.duration_ms > PRECHECK.maxDurationMs) return 'AUDIO_TOO_LONG'; if (metrics.rms_dbfs < PRECHECK.minRmsDbfs || metrics.peak_dbfs < PRECHECK.minPeakDbfs) return 'VOLUME_TOO_LOW'; if (metrics.silence_ratio > PRECHECK.silenceMax) return 'TOO_MUCH_SILENCE'; if (metrics.clipping_ratio > PRECHECK.clippingMax) return 'CLIPPING_TOO_HIGH'; return null
+  if (!blob.size) return 'AUDIO_BLOB_EMPTY'
+  if (metrics.duration_ms < PRECHECK.minDurationMs) return 'AUDIO_TOO_SHORT'
+  if (metrics.duration_ms > PRECHECK.maxDurationMs) return 'AUDIO_TOO_LONG'
+  // Optional metrics — only fail if present and out of bounds
+  if (
+    (metrics.rms_dbfs !== undefined && metrics.rms_dbfs < PRECHECK.minRmsDbfs) ||
+    (metrics.peak_dbfs !== undefined && metrics.peak_dbfs < PRECHECK.minPeakDbfs)
+  ) return 'VOLUME_TOO_LOW'
+  if (metrics.silence_ratio !== undefined && metrics.silence_ratio > PRECHECK.silenceMax) return 'TOO_MUCH_SILENCE'
+  if (metrics.clipping_ratio !== undefined && metrics.clipping_ratio > PRECHECK.clippingMax) return 'CLIPPING_TOO_HIGH'
+  return null
 }

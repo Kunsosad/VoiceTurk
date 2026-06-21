@@ -70,8 +70,11 @@ def test_unified_dual_pipeline(tmp_path: Path):
     try:
         seeded = client.post("/demo/seed-unified-user").json()
         assert seeded["user_id"] == "user_001" and seeded["total_items"] == 20
-        session = client.post("/recording-sessions/start", json={"campaign_id": seeded["campaign_id"],
-                                                                  "contributor_id": "user_001"}).json()
+        login = client.post("/auth/login", json={"email": "buyer@voiceturk.demo", "password": "VoiceTurk123!"})
+        assert login.status_code == 200
+        client.headers["authorization"] = f"Bearer {login.json()['access_token']}"
+        # contributor_id is now derived from the JWT token, not the request body
+        session = client.post("/recording-sessions/start", json={"campaign_id": seeded["campaign_id"]}).json()
         assert session["realtime"]["provider"] == "browser_tts"
         first, second = session["items"][:2]
         first_action = client.get(f"/recording-sessions/{session['session_id']}/next-action").json()
@@ -101,14 +104,15 @@ def test_unified_dual_pipeline(tmp_path: Path):
         assert client.get("/deep-check/status").json()["review_pending"] == 1
         checks = client.get(f"/audio-samples/{passed['sample_id']}/checks").json()
         assert checks["fast_check"]["sample_rate"] == 16000
+        # validator_id is now derived from the JWT token, not the request body
         accepted = client.post(f"/validation/audio-samples/{passed['sample_id']}/review", json={
-            "decision": "ACCEPT", "validator_id": "user_001", "validator_notes": "Self-reviewed."}).json()
-        assert accepted["validator_id"] == "user_001" and accepted["item_status"] == "ACCEPTED"
+            "decision": "ACCEPT", "validator_notes": "Self-reviewed."}).json()
+        assert accepted["item_status"] == "ACCEPTED"
 
         retake_sample = upload(client, session, second["item_id"], wav_fixture())
         client.post("/deep-check/run-pending")
         client.post(f"/validation/audio-samples/{retake_sample['sample_id']}/review", json={
-            "decision": "NEED_RETAKE", "validator_id": "user_001"})
+            "decision": "NEED_RETAKE"})
         retakes = client.get(f"/campaigns/{seeded['campaign_id']}/retakes").json()
         assert retakes[0]["item_id"] == second["item_id"]
         restarted = client.post(f"/recording-items/{second['item_id']}/start-retake", json={"contributor_id": "user_001"}).json()
@@ -135,7 +139,7 @@ def test_sqlite_repository_survives_restart(tmp_path: Path):
     seeded = first.seed_demo()
     second = make_service(tmp_path, SQLiteRepository(path))
     restored = second.repo.get("users", "user_001")
-    assert restored.name == "VoiceTurk Operator" and restored.role == UserRole.USER
+    assert restored.name == "VoiceTurk Demo Buyer" and restored.role == UserRole.BUYER
     assert second.campaign_detail(seeded["campaign_id"])["item_count"] == 20
 
 

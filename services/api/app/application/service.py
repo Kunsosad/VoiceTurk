@@ -35,11 +35,14 @@ class VoiceTurkService:
 
     # Unified user and campaign workflow
     def seed_demo(self) -> dict[str, Any]:
+        buyer = next((x for x in self.repo.list("users") if x.email == "buyer@voiceturk.demo"), None)
+        if not buyer:
+            buyer = User("user_001", UserRole.BUYER, "VoiceTurk Demo Buyer", "buyer@voiceturk.demo")
+            self.repo.add("users", buyer)
         existing = next((x for x in self.repo.list("campaigns") if x.name == "E-commerce Prosody Dataset"), None)
         if existing:
-            return {"user_id": "user_001", "campaign_id": existing.campaign_id, "status": existing.status,
+            return {"user_id": buyer.user_id, "campaign_id": existing.campaign_id, "status": existing.status,
                     "total_items": len(self._campaign("items", existing.campaign_id)), "created": False}
-        self.repo.add("users", User("user_001", UserRole.USER, "VoiceTurk Operator", "user@voiceturk.local"))
         lines = [
             {"transcript": "Tôi chưa nhận được hàng.", "intent": "delivery_delay", "context_brief": "Khách hàng đã chờ đơn hàng lâu hơn ngày dự kiến."},
             {"transcript": "Đơn hàng của tôi đang ở đâu?", "intent": "order_status", "context_brief": "Khách hàng muốn biết trạng thái hiện tại của đơn hàng."},
@@ -47,18 +50,22 @@ class VoiceTurkService:
             {"transcript": "Sao đơn hàng giao trễ vậy?", "intent": "delivery_delay", "context_brief": "Khách hàng khó chịu vì đơn hàng giao muộn."},
             {"transcript": "Tôi cần kiểm tra trạng thái đơn hàng.", "intent": "order_status", "context_brief": "Khách hàng cần tổng đài kiểm tra đơn giúp mình."},
         ]
-        campaign = self.create_campaign({"buyer_id": "user_001", "name": "E-commerce Prosody Dataset",
+        campaign = self.create_campaign({"buyer_id": buyer.user_id, "name": "E-commerce Prosody Dataset",
             "domain": "ecommerce_cskh", "target_emotions": ["neutral", "confused", "impatient", "angry"],
             "accent_targets": ["southern", "northern", "central"], "environment_targets": ["quiet", "light_noise"],
             "quality_rules": {}, "script_lines": lines})
         generated = self.generate_items(campaign["campaign_id"])
         self.activate_campaign(campaign["campaign_id"])
-        return {"user_id": "user_001", "campaign_id": campaign["campaign_id"], "status": CampaignStatus.ACTIVE,
+        return {"user_id": buyer.user_id, "campaign_id": campaign["campaign_id"], "status": CampaignStatus.ACTIVE,
                 "total_items": generated["total_items"], "created": True}
 
     def create_campaign(self, data: dict[str, Any]) -> dict[str, Any]:
-        campaign = Campaign(new_id("camp"), data["buyer_id"], data["name"], data["domain"], data["target_emotions"],
-            data.get("accent_targets", []), data.get("environment_targets", []), data.get("quality_rules", {}))
+        campaign = Campaign(campaign_id=new_id("camp"), buyer_id=data["buyer_id"], name=data["name"],
+            domain=data["domain"], target_emotions=data["target_emotions"], description=data.get("description", ""),
+            intents=data.get("intents", []), target_sample_count=data.get("target_sample_count", 0),
+            recording_instructions=data.get("recording_instructions", ""),
+            accent_targets=data.get("accent_targets", []), environment_targets=data.get("environment_targets", []),
+            quality_rules=data.get("quality_rules", {}))
         self.repo.add("campaigns", campaign)
         for value in data["script_lines"]:
             self.repo.add("script_lines", ScriptLine(new_id("line"), campaign.campaign_id, value["transcript"],
@@ -68,12 +75,90 @@ class VoiceTurkService:
     def list_campaigns(self) -> list[dict[str, Any]]:
         return [self.campaign_detail(value.campaign_id) for value in self.repo.list("campaigns")]
 
+    def list_buyer_campaigns(self, buyer_id: str) -> list[dict[str, Any]]:
+        return [self.campaign_detail(value.campaign_id) for value in self.repo.list("campaigns")
+                if value.buyer_id == buyer_id]
+
+    def available_campaigns(self, query: str = "", domain: str = "", emotion: str = "") -> list[dict[str, Any]]:
+        values = []
+        for campaign in self.repo.list("campaigns"):
+            if campaign.status != CampaignStatus.ACTIVE or (domain and campaign.domain != domain):
+                continue
+            if emotion and emotion not in campaign.target_emotions:
+                continue
+            if query and query.lower() not in f"{campaign.name} {getattr(campaign, 'description', '')}".lower():
+                continue
+            coverage = self.coverage(campaign.campaign_id)
+            detail = self.campaign_detail(campaign.campaign_id)
+            values.append({key: detail.get(key) for key in
+                           ("campaign_id", "name", "description", "domain", "intents", "target_emotions", "status")})
+            values[-1].update({"open_item_count": coverage["open_items"],
+                "review_pending_count": coverage["review_pending_items"], "accepted_count": coverage["accepted_items"],
+                "estimated_time_minutes": max(1, round(coverage["open_items"] * 0.75)),
+                "sample_prompts": [line["transcript"] for line in detail["script_lines"][:3]]})
+        return values
+
     def campaign_detail(self, campaign_id: str) -> dict[str, Any]:
         campaign = self._required("campaigns", campaign_id)
         result = campaign.to_dict()
         result["script_lines"] = [x.to_dict() for x in self._campaign("script_lines", campaign_id)]
         result["item_count"] = len(self._campaign("items", campaign_id))
         return result
+
+    def update_campaign(self, campaign_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        campaign = self._required("campaigns", campaign_id)
+        if campaign.status not in (CampaignStatus.DRAFT, CampaignStatus.PREVIEW_READY):
+            raise ValueError("Only draft or preview campaigns can be edited")
+        for key, value in changes.items():
+            if value is not None and hasattr(campaign, key):
+                setattr(campaign, key, value)
+        campaign.updated_at = now()
+        self.repo.add("campaigns", campaign)
+        return self.campaign_detail(campaign_id)
+
+    def archive_campaign(self, campaign_id: str) -> dict[str, Any]:
+        campaign = self._required("campaigns", campaign_id)
+        if campaign.status in (CampaignStatus.ACTIVE, CampaignStatus.PREVIEW_READY, CampaignStatus.DRAFT,
+                               CampaignStatus.COLLECTION_COMPLETED, CampaignStatus.DATASET_READY):
+            campaign.status, campaign.updated_at = CampaignStatus.ARCHIVED, now()
+            self.repo.add("campaigns", campaign)
+            return {"campaign_id": campaign_id, "status": campaign.status}
+        raise ValueError("Campaign cannot be archived from its current state")
+
+    def add_script_line(self, campaign_id: str, value: dict[str, Any]) -> dict[str, Any]:
+        campaign = self._required("campaigns", campaign_id)
+        if campaign.status not in (CampaignStatus.DRAFT, CampaignStatus.PREVIEW_READY):
+            raise ValueError("Script lines can only be added before activation")
+        line = ScriptLine(new_id("line"), campaign_id, value["transcript"], value["intent"], value.get("context_brief", ""))
+        self.repo.add("script_lines", line)
+        return line.to_dict()
+
+    def update_script_line(self, campaign_id: str, line_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        campaign = self._required("campaigns", campaign_id)
+        line = self._required("script_lines", line_id)
+        if line.campaign_id != campaign_id:
+            raise KeyError("Script line not found")
+        if campaign.status not in (CampaignStatus.DRAFT, CampaignStatus.PREVIEW_READY):
+            raise ValueError("Script lines can only be edited before activation")
+        for key in ("transcript", "intent", "context_brief"):
+            if changes.get(key) is not None:
+                setattr(line, key, changes[key])
+        line.updated_at = now()
+        self.repo.add("script_lines", line)
+        return line.to_dict()
+
+    def delete_script_line(self, campaign_id: str, line_id: str) -> dict[str, Any]:
+        campaign = self._required("campaigns", campaign_id)
+        line = self._required("script_lines", line_id)
+        if line.campaign_id != campaign_id:
+            raise KeyError("Script line not found")
+        if campaign.status not in (CampaignStatus.DRAFT, CampaignStatus.PREVIEW_READY):
+            raise ValueError("Script lines can only be deleted before activation")
+        for item in list(self._campaign("items", campaign_id)):
+            if item.line_id == line_id:
+                self.repo.delete("items", item.item_id)
+        self.repo.delete("script_lines", line_id)
+        return {"line_id": line_id, "deleted": True}
 
     def generate_items(self, campaign_id: str) -> dict[str, Any]:
         campaign = self._required("campaigns", campaign_id)
@@ -142,6 +227,9 @@ class VoiceTurkService:
         session = self._required("sessions", session_id)
         return [self._item_dto(x) for x in self._campaign("items", session.campaign_id)
                 if x.assigned_to == session.contributor_id and x.status in (RecordingItemStatus.ASSIGNED, RecordingItemStatus.NEED_RETAKE)]
+
+    def session_detail(self, session_id: str) -> dict[str, Any]:
+        return self._required("sessions", session_id).to_dict()
 
     def next_action(self, session_id: str) -> dict[str, Any]:
         session = self._required("sessions", session_id)
@@ -228,7 +316,13 @@ class VoiceTurkService:
         item = self._required("items", data["item_id"])
         if session.status != RecordingSessionStatus.ACTIVE or item.status != RecordingItemStatus.ASSIGNED:
             raise ValueError("Session or item is not ready for upload")
+        if item.campaign_id != session.campaign_id or item.assigned_to != session.contributor_id:
+            raise ValueError("Session, item, and contributor assignment do not match")
+        if data.get("content_type") not in ("audio/wav", "audio/x-wav", "audio/wave"):
+            raise ValueError("Only PCM WAV audio is supported")
         suffix = Path(data.get("filename") or "recording.wav").suffix.lower() or ".wav"
+        if suffix != ".wav":
+            raise ValueError("Audio filename must use the .wav extension")
         upload_id = new_id("upload")
         object_key = f"tmp/audio/{session.session_id}/{item.item_id}/{uuid4().hex}{suffix}"
         upload = {"upload_id": upload_id, "session_id": session.session_id, "item_id": item.item_id,

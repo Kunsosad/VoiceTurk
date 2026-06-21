@@ -34,6 +34,10 @@ class Campaign(Entity):
     name: str
     domain: str
     target_emotions: list[str]
+    description: str = ""
+    intents: list[str] = field(default_factory=list)
+    target_sample_count: int = 0
+    recording_instructions: str = ""
     accent_targets: list[str] = field(default_factory=list)
     environment_targets: list[str] = field(default_factory=list)
     quality_rules: dict[str, Any] = field(default_factory=dict)
@@ -41,6 +45,7 @@ class Campaign(Entity):
     created_at: datetime = field(default_factory=now)
     activated_at: datetime | None = None
     completed_at: datetime | None = None
+    updated_at: datetime = field(default_factory=now)
 
 
 @dataclass
@@ -52,6 +57,7 @@ class ScriptLine(Entity):
     context_brief: str
     status: ScriptLineStatus = ScriptLineStatus.DRAFT
     created_at: datetime = field(default_factory=now)
+    updated_at: datetime = field(default_factory=now)
 
 
 @dataclass
