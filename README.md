@@ -6,7 +6,7 @@ VoiceTurk is a unified, coach-led Vietnamese prosody recording and dataset packa
 
 - FastAPI modular monolith with seven core domain entities and ports/adapters boundaries.
 - SQLite persistence; local object storage by default, MinIO through an S3-compatible adapter.
-- Deterministic decoded-audio FastCheck, queued heuristic DeepCheck, self-review, and accepted-only dataset export.
+- Deterministic decoded-audio FastCheck, automatic technical DeepCheck, self-review, and accepted-only dataset export.
 - React/Vite unified Studio with Agora RTC when configured and Browser TTS/text fallback.
 - Agora owns realtime experience only. Object storage owns bytes only. Backend owns all business state.
 
@@ -42,7 +42,7 @@ Client pipeline checks microphone permission/device/track/mute, no speech after 
 
 Backend FastCheck decodes WAV and checks integrity, size, PCM format, duration, RMS/peak dBFS, clipping, 20 ms-frame silence/speech ratios, speech duration, leading/trailing silence, estimated SNR, and a deterministic score. Hard failures create no AudioSample and no official object.
 
-Passing files move from `tmp/audio/{session}/{item}/...` to `audio/{campaign}/{item}/{sample}.wav`. DeepCheck is queued in process, uses deterministic quality/prosody heuristics, and maps samples to REVIEW_PENDING, NEED_RETAKE, or REJECTED. `POST /deep-check/run-pending` processes/recover pending CHECKING samples without Redis.
+Passing files move from `tmp/audio/{session}/{item}/...` to `audio/{campaign}/{item}/{sample}.wav`. A backend worker recovers durable CHECKING samples and runs model-free technical DeepCheck. `POST /deep-check/run-pending` remains a manual fallback; the frontend does not trigger it.
 
 ## Agora
 
@@ -152,8 +152,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke_test.ps1
 
 ## Known limitations
 
-- DeepCheck emotion/prosody output is explicitly heuristic, not scientific emotion recognition.
-- The in-process queue is restart-recoverable from CHECKING samples but is not a multi-process production worker.
+- ASR, alignment, and emotion/prosody checks are explicitly unavailable; no transcript or emotion score is fabricated.
+- The API-process scanner is restart-recoverable from CHECKING samples but is not a multi-process production worker.
 - MinIO and Agora code paths require external services/credentials and are not exercised by the default offline test.
 - The Agora SDK increases the initial frontend bundle; lazy loading is a recommended follow-up.
 - FastCheck supports 16-bit mono/stereo PCM WAV. Other containers require a future decoder adapter.

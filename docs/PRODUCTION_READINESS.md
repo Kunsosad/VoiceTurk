@@ -94,9 +94,9 @@ DATABASE_URL=sqlite:///./voiceturk.db
 
 ## Known MVP Limitations
 
-- **In-process queue**: DeepCheck uses an in-process queue. Restarts recover from CHECKING status, but a true Redis/Celery queue is recommended for multi-process production.
+- **API-process worker**: DeepCheck automatically scans durable CHECKING state and survives queue loss/restarts, but a true durable queue/claim mechanism is recommended for multi-process production.
 - **SQLite**: Works for pilot but does not support concurrent writes well. PostgreSQL recommended for multi-user load.
-- **DeepCheck emotion analysis is heuristic**: Not scientific emotion recognition.
+- **ASR/prosody unavailable**: DeepCheck currently measures technical audio only and explicitly marks transcript, alignment, and emotion/prosody checks unavailable.
 - **FastCheck supports 16-bit mono/stereo PCM WAV only**: Other containers need a future decoder adapter.
 - **Agora bundle size**: The Agora SDK is included in the main bundle. Lazy loading is a recommended follow-up.
 - **Single validator**: The MVP uses self-review (buyer acts as validator). Multi-reviewer workflow is out of scope.

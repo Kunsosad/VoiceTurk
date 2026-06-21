@@ -5,6 +5,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
+from threading import RLock
 from typing import Any, BinaryIO
 from uuid import uuid4
 
@@ -32,6 +33,8 @@ class VoiceTurkService:
         self.deep_check, self.proof, self.queue, self.realtime = deep_check, proof, queue, realtime
         self.export_root, self.keep_failed_uploads = export_root, keep_failed_uploads
         self.presigned_expire_seconds, self.fast_check_timeout_seconds = presigned_expire_seconds, fast_check_timeout_seconds
+        self._deep_check_lock = RLock()
+        self._deep_check_in_progress: set[str] = set()
 
     # Unified user and campaign workflow
     def seed_demo(self) -> dict[str, Any]:
@@ -438,41 +441,76 @@ class VoiceTurkService:
             "object_key": slot["object_key"], "client_metrics": {"duration_ms": duration_ms}})
 
     # DeepCheck queue and self-review
-    def run_pending_deep_checks(self, limit: int = 100) -> dict[str, Any]:
+    def run_pending_deep_checks(self, limit: int = 100, source: str = "manual_endpoint") -> dict[str, Any]:
+        recovered = 0
         for sample in self.repo.list("samples"):
             if sample.status == AudioSampleStatus.CHECKING:
-                self.queue.enqueue(sample.sample_id)
+                recovered += int(self.queue.enqueue(sample.sample_id))
         processed, results = 0, []
         while processed < limit and (sample_id := self.queue.pop()):
-            results.append(self.process_one_deep_check(sample_id))
+            results.append(self.process_one_deep_check(sample_id, source=source))
             processed += 1
-        return {"processed": processed, "pending": self.queue.size(), "results": results}
+        return {"processed": processed, "recovered": recovered, "pending": self.queue.size(), "results": results}
 
-    def process_one_deep_check(self, sample_id: str) -> dict[str, Any]:
+    def process_one_deep_check(self, sample_id: str, source: str = "auto_worker") -> dict[str, Any]:
+        started_at = time.perf_counter()
+        with self._deep_check_lock:
+            if sample_id in self._deep_check_in_progress:
+                return {"sample_id": sample_id, "skipped": True, "reason_code": "ALREADY_PROCESSING"}
+            self._deep_check_in_progress.add(sample_id)
+        try:
+            return self._process_one_deep_check(sample_id, source, started_at)
+        finally:
+            with self._deep_check_lock:
+                self._deep_check_in_progress.discard(sample_id)
+
+    def _process_one_deep_check(self, sample_id: str, source: str, started_at: float) -> dict[str, Any]:
         sample = self._required("samples", sample_id)
         if sample.status != AudioSampleStatus.CHECKING:
             return {"sample_id": sample_id, "status": sample.status, "skipped": True}
         item = self._required("items", sample.item_id)
+        old_status = sample.status
         try:
             result = self.deep_check.analyze(sample, self.storage.get_object(sample.audio_path))
-            for key, value in result.metadata.items():
-                if hasattr(sample, key):
-                    setattr(sample, key, value)
             sample.deep_check_status, sample.deep_check_reason_code = result.decision.value, result.reason_code
-            sample.deep_check_message_vi, sample.deep_checked_at = result.message_vi, now()
+            sample.deep_check_reason_codes = result.reason_codes
+            sample.deep_check_message_vi, sample.deep_checked_at = result.feedback_vi, now()
+            sample.deep_check_technical_metrics = result.technical_metrics
+            sample.deep_check_transcript_metrics = result.transcript_metrics
+            sample.deep_check_prosody_metrics = result.prosody_metrics
+            sample.deep_check_checks_available = result.checks_available
+            sample.deep_check_score_components = result.score_components
+            sample.quality_score = result.quality_score
             if result.decision == DeepCheckDecision.PASS_TO_REVIEW:
                 sample.status = AudioSampleStatus.REVIEW_PENDING
             elif result.decision == DeepCheckDecision.NEED_RETAKE_LATER:
                 sample.status, item.status = AudioSampleStatus.NEED_RETAKE, RecordingItemStatus.NEED_RETAKE
             else:
                 sample.status, item.status = AudioSampleStatus.REJECTED, RecordingItemStatus.OPEN
+        except FileNotFoundError:
+            sample.status, item.status = AudioSampleStatus.REJECTED, RecordingItemStatus.OPEN
+            sample.deep_check_status, sample.deep_check_reason_code = DeepCheckDecision.REJECT, "AUDIO_FILE_MISSING"
+            sample.deep_check_reason_codes = ["AUDIO_FILE_MISSING", "TEXT_CHECK_NOT_AVAILABLE", "PROSODY_NOT_CHECKED"]
+            sample.deep_check_message_vi = "Không tìm thấy file âm thanh chính thức. Câu đã được mở lại để thu."
+            sample.deep_checked_at = now()
         except Exception as exc:
-            sample.deep_check_status, sample.deep_check_reason_code = "ERROR", "DEEP_CHECK_ERROR"
-            sample.deep_check_message_vi = f"DeepCheck failed and can be retried: {exc}"
+            sample.deep_check_retry_count += 1
+            sample.deep_check_status, sample.deep_check_reason_code = "RETRY_PENDING", "DEEP_CHECK_TEMPORARY_ERROR"
+            sample.deep_check_reason_codes = ["DEEP_CHECK_TEMPORARY_ERROR"]
+            sample.deep_check_message_vi = "DeepCheck tạm thời lỗi và sẽ tự thử lại."
+            logger.exception(json.dumps({"event": "deepcheck_retry_scheduled", "sample_id": sample_id,
+                "source": source, "retry_count": sample.deep_check_retry_count, "error_type": type(exc).__name__}))
         self.repo.add("samples", sample)
         self.repo.add("items", item)
+        runtime_ms = round((time.perf_counter() - started_at) * 1000)
+        self._log("deepcheck_finished", sample_id=sample_id, source=source, decision=sample.deep_check_status,
+            reason_codes=sample.deep_check_reason_codes, technical_metrics=sample.deep_check_technical_metrics,
+            runtime_ms=runtime_ms, retry_count=sample.deep_check_retry_count)
+        if old_status != sample.status:
+            self._log("sample_state_transition", sample_id=sample_id, old_status=old_status,
+                new_status=sample.status, reason=sample.deep_check_reason_code)
         return {"sample_id": sample_id, "status": sample.status, "decision": sample.deep_check_status,
-                "reason_code": sample.deep_check_reason_code}
+                "reason_code": sample.deep_check_reason_code, "reason_codes": sample.deep_check_reason_codes}
 
     def deep_check_status(self) -> dict[str, Any]:
         counts = Counter(x.status.value for x in self.repo.list("samples"))
@@ -481,7 +519,7 @@ class VoiceTurkService:
 
     def retry_deep_check(self, sample_id: str) -> dict[str, Any]:
         sample = self._required("samples", sample_id)
-        if sample.deep_check_status != "ERROR":
+        if sample.deep_check_status not in {"ERROR", "RETRY_PENDING"}:
             raise ValueError("Only failed DeepCheck jobs can be retried")
         sample.status, sample.deep_check_status = AudioSampleStatus.CHECKING, "PENDING"
         self.repo.add("samples", sample)
@@ -505,8 +543,13 @@ class VoiceTurkService:
             "peak_dbfs", "clipping_ratio", "silence_ratio", "speech_ratio", "speech_duration_ms",
             "leading_silence_ms", "trailing_silence_ms", "estimated_snr_db", "file_size_bytes")},
             "deep_check": {"status": sample.deep_check_status, "reason_code": sample.deep_check_reason_code,
-                "message_vi": sample.deep_check_message_vi, "quality_score": sample.quality_score,
-                "speech_rate_wps": sample.speech_rate_wps, "pitch_summary": sample.pitch_summary}}
+                "reason_codes": sample.deep_check_reason_codes, "message_vi": sample.deep_check_message_vi,
+                "quality_score": sample.quality_score, "technical_metrics": sample.deep_check_technical_metrics,
+                "transcript_metrics": sample.deep_check_transcript_metrics,
+                "prosody_metrics": sample.deep_check_prosody_metrics,
+                "checks_available": sample.deep_check_checks_available,
+                "score_components": sample.deep_check_score_components,
+                "retry_count": sample.deep_check_retry_count}}
 
     def sample_audio(self, sample_id: str) -> tuple[bytes, str]:
         sample = self._required("samples", sample_id)
@@ -565,7 +608,7 @@ class VoiceTurkService:
         report_path = root / "quality_report.json"
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         card_path = root / "data_card.md"
-        card_path.write_text(f"# {campaign.name}\n\nDomain: {campaign.domain}\n\n## Intended use\nVietnamese prosody research.\n\n## Collection method\nCoach-led browser recordings with FastCheck, heuristic DeepCheck, and self-review.\n\n## Labels\nTranscript, intent, emotion, accent, environment, and quality metadata.\n\n## Limitations\nEmotion analysis is heuristic and not production-grade.\n\n## Consent\nConsent version mvp-v1.\n", encoding="utf-8")
+        card_path.write_text(f"# {campaign.name}\n\nDomain: {campaign.domain}\n\n## Intended use\nVietnamese prosody research.\n\n## Collection method\nCoach-led browser recordings with FastCheck, model-free technical DeepCheck, and Validator review.\n\n## Labels\nTranscript, intent, target emotion, accent, environment, and measured quality metadata.\n\n## Limitations\nASR, alignment, and prosody/emotion verification are not configured; target emotion is a requested label, not a detected result.\n\n## Consent\nConsent version mvp-v1.\n", encoding="utf-8")
         license_path = root / "license.json"
         license_path.write_text(json.dumps({"license": "VoiceTurk MVP Research License", "consent_version": "mvp-v1"}, indent=2), encoding="utf-8")
         files = [path for path in root.rglob("*") if path.is_file()]

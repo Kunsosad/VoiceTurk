@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     local_export_dir: Path = Path("exports")
     database_url: str = "sqlite:///./voiceturk.db"
     queue_provider: str = "in_process"
+    deep_check_worker_enabled: bool = True
+    deep_check_poll_interval_seconds: float = 3.0
+    deep_check_batch_size: int = 10
     keep_failed_uploads: bool = False
     s3_endpoint_url: str = ""
     s3_bucket_name: str = "voiceturk-dev"
@@ -33,6 +36,7 @@ class Settings(BaseSettings):
     s3_presigned_expire_seconds: int = 900
     agora_app_id: str = ""
     agora_app_certificate: str = ""
+    # pilot_starting_point: research-guided bounds requiring calibration on VoiceTurk pilot audio.
     fast_check_min_duration_ms: int = 900
     fast_check_max_duration_ms: int = 15000
     fast_check_min_rms_dbfs: float = -45.0
@@ -75,6 +79,8 @@ class Settings(BaseSettings):
             raise ValueError("COOKIE_SAMESITE must be lax, strict, or none")
         if self.object_storage_provider == "minio" and not self.s3_public_base_url:
             raise ValueError("S3_PUBLIC_BASE_URL is required when OBJECT_STORAGE_PROVIDER=minio")
+        if self.deep_check_poll_interval_seconds <= 0 or self.deep_check_batch_size <= 0:
+            raise ValueError("DeepCheck worker poll interval and batch size must be positive")
         if self.s3_region == "auto" and self.object_storage_provider == "minio":
             self.s3_region = "us-east-1"
         if self.app_env in {"staging", "production"}:

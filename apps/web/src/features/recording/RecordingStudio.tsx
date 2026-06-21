@@ -184,8 +184,7 @@ export function RecordingStudio({ campaignId }: Props) {
         await prepareTask(action.item!);
       } else if (action.action === "WAIT_DEEPCHECK") {
         setMachine("WAIT_DEEPCHECK");
-        api.runDeepCheck().catch(() => {});
-        setTimeout(() => loadNext(sessionId), 500);
+        setTimeout(() => loadNext(sessionId), 1000);
       } else if (action.action === "WAITING_FOR_RECORDING") {
         setItem(null);
         setMachine("WAITING_FOR_RECORDING");
@@ -266,6 +265,7 @@ export function RecordingStudio({ campaignId }: Props) {
     const reason = precheck(result.blob, result.metrics);
     setLastCheck(result.metrics);
     if (reason) {
+      console.info("[VoiceTurk precheck]", { reason_code: reason, ...result.metrics });
       log("PRECHECK_FAILED", reason);
       return feedbackAndRetry(reason);
     }
@@ -337,7 +337,6 @@ export function RecordingStudio({ campaignId }: Props) {
         return;
       }
       setMachine("FASTCHECK_CONTINUE_NEXT");
-      api.runDeepCheck().catch(() => {});
       setMachine("COACH_SPEAKING_FEEDBACK");
       await deadline(coach.speak(check.message_vi), 10000, "COACH_FEEDBACK");
       setMachine("AUTO_ADVANCE_NEXT_ITEM");

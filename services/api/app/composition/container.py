@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from pathlib import Path
 
-from app.adapters.check.local import HeuristicDeepCheckAdapter, RuleBasedFastCheckAdapter
+from app.adapters.check.local import RuleBasedFastCheckAdapter, TechnicalDeepCheckAdapter
 from app.adapters.persistence.sqlite import SQLiteRepository
 from app.adapters.proof.local_hash import LocalHashProofAdapter
 from app.adapters.queue.in_process import InProcessJobQueueAdapter
@@ -48,7 +48,7 @@ def get_service() -> VoiceTurkService:
         trailing_silence_max_ms=settings.fast_check_trailing_silence_max_ms,
         min_file_size_bytes=settings.fast_check_min_file_size_bytes)
     realtime = AgoraRealtimeTokenAdapter(settings.agora_app_id, settings.agora_app_certificate) if settings.realtime_provider == "agora" else AgoraRealtimeTokenAdapter("", "")
-    return VoiceTurkService(repository, storage, fast_check, HeuristicDeepCheckAdapter(), LocalHashProofAdapter(),
+    return VoiceTurkService(repository, storage, fast_check, TechnicalDeepCheckAdapter(), LocalHashProofAdapter(),
         InProcessJobQueueAdapter(), realtime,
         settings.local_export_dir, settings.keep_failed_uploads, settings.s3_presigned_expire_seconds,
         settings.fast_check_timeout_seconds)

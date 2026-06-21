@@ -150,7 +150,7 @@ export const api = {
       "UPLOAD_COMPLETE_FASTCHECK",
     ),
 
-  /* DeepCheck */
+  /* DeepCheck diagnostics (processing is backend-owned) */
   runDeepCheck: () =>
     request<{ processed: number; pending: number }>(
       "/deep-check/run-pending",

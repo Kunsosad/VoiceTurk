@@ -19,10 +19,14 @@ MESSAGES = {
     "NO_SPEECH_DETECTED": "Mình chưa phát hiện giọng nói rõ ràng. Bạn đọc lại câu này nhé.",
     "TOO_MUCH_SILENCE": "Có quá nhiều khoảng im lặng. Bạn đọc lại liền mạch hơn nhé.",
     "CLIPPING_TOO_HIGH": "Âm thanh bị vỡ tiếng. Bạn nói nhỏ hơn hoặc để micro xa hơn một chút nhé.",
-    "UNSUPPORTED_FORMAT": "Định dạng audio chưa hỗ trợ. Hãy thu lại bằng WAV PCM nhé.",
+    "UNSUPPORTED_AUDIO_FORMAT": "Định dạng audio chưa hỗ trợ. Hãy thu lại bằng WAV PCM nhé.",
     "FILE_TOO_SMALL": "File âm thanh quá nhỏ để kiểm tra. Bạn thử ghi lại nhé.",
     "FAST_CHECK_PASSED": "Ổn rồi, mình chuyển sang câu tiếp theo nhé.",
 }
+
+
+class UnsupportedAudioFormatError(ValueError):
+    pass
 
 
 class RuleBasedFastCheckAdapter(FastCheckPort):
@@ -39,9 +43,11 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
         if len(data) < self.t["min_file_size_bytes"]:
             return self._fail("FILE_TOO_SMALL", {"file_size_bytes": len(data)})
         if not filename.lower().endswith(".wav") and content_type not in {"audio/wav", "audio/x-wav"}:
-            return self._fail("UNSUPPORTED_FORMAT", {"file_size_bytes": len(data)})
+            return self._fail("UNSUPPORTED_AUDIO_FORMAT", {"file_size_bytes": len(data)})
         try:
             metrics = self._analyze_wav(data)
+        except UnsupportedAudioFormatError:
+            return self._fail("UNSUPPORTED_AUDIO_FORMAT", {"file_size_bytes": len(data)})
         except (wave.Error, EOFError, ValueError, IndexError):
             return self._fail("DECODE_FAILED", {"file_size_bytes": len(data)})
         metrics["file_size_bytes"] = len(data)
@@ -50,8 +56,8 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
             (metrics["duration_ms"] < self.t["min_duration_ms"], "AUDIO_TOO_SHORT"),
             (metrics["duration_ms"] > self.t["max_duration_ms"], "AUDIO_TOO_LONG"),
             (metrics["rms_dbfs"] < self.t["min_rms_dbfs"] or metrics["peak_dbfs"] < self.t["min_peak_dbfs"], "VOLUME_TOO_LOW"),
-            (metrics["rms_dbfs"] > self.t["max_rms_dbfs"], "VOLUME_TOO_HIGH"),
             (metrics["clipping_ratio"] > self.t["clipping_ratio_max"], "CLIPPING_TOO_HIGH"),
+            (metrics["rms_dbfs"] > self.t["max_rms_dbfs"], "VOLUME_TOO_HIGH"),
             (metrics["silence_ratio"] > self.t["silence_ratio_max"], "TOO_MUCH_SILENCE"),
             (metrics["speech_ratio"] < self.t["speech_ratio_min"], "NO_SPEECH_DETECTED"),
         ]
@@ -74,7 +80,7 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
         with wave.open(BytesIO(data), "rb") as audio:
             channels, width, rate, frames = audio.getnchannels(), audio.getsampwidth(), audio.getframerate(), audio.getnframes()
             if width != 2 or rate <= 0 or channels not in (1, 2):
-                raise ValueError("Only 16-bit mono/stereo PCM is supported")
+                raise UnsupportedAudioFormatError("Only 16-bit mono/stereo PCM is supported")
             values = array("h", audio.readframes(frames))
         if not values:
             raise ValueError("No samples")
@@ -117,19 +123,53 @@ class RuleBasedFastCheckAdapter(FastCheckPort):
         return FastCheckResult(False, reason, MESSAGES[reason], "hard_fail", metrics or {})
 
 
-class HeuristicDeepCheckAdapter(DeepCheckPort):
+class TechnicalDeepCheckAdapter(DeepCheckPort):
+    """Model-free DeepCheck: measured DSP evidence only, with unavailable checks explicit."""
+
+    def __init__(self) -> None:
+        self.analyzer = RuleBasedFastCheckAdapter()
+
     def analyze(self, sample: AudioSample, data: bytes) -> DeepCheckResult:
-        score = float(sample.fast_check_score or 0.75)
-        emotion_adjustment = {"neutral": 0.03, "confused": -0.01, "impatient": -0.02, "angry": -0.03}.get(sample.target_emotion_snapshot, 0)
-        quality = round(max(0.0, min(1.0, score + emotion_adjustment)), 3)
-        metadata = {"loudness_db": sample.loudness_db, "silence_ratio": sample.silence_ratio,
-            "speech_rate_wps": round(max(1.2, min(4.2, 2.1 + (sample.speech_ratio or 0.5))), 2),
-            "pitch_summary": f"heuristic-{sample.target_emotion_snapshot}", "quality_score": quality}
-        if quality < 0.40:
-            return DeepCheckResult(DeepCheckDecision.REJECT, "QUALITY_SCORE_TOO_LOW",
-                "Chất lượng tổng thể chưa đủ để tiếp tục. Hệ thống đã mở lại câu này.", metadata)
-        if quality < 0.68 or (sample.silence_ratio or 0) > 0.55:
-            return DeepCheckResult(DeepCheckDecision.NEED_RETAKE_LATER, "TOO_MANY_PAUSES",
-                "Bản thu khá rõ nhưng còn nhiều khoảng dừng. Bạn hãy thu lại liền mạch hơn nhé.", metadata)
-        return DeepCheckResult(DeepCheckDecision.PASS_TO_REVIEW, "DEEP_CHECK_PASSED",
-            "DeepCheck đã hoàn tất. Bản thu sẵn sàng để bạn tự đánh giá.", metadata)
+        unavailable = ["ASR_NOT_CONFIGURED", "TEXT_CHECK_NOT_AVAILABLE", "PROSODY_NOT_CHECKED"]
+        checks = {"technical": True, "asr": False, "alignment": False, "prosody": False}
+        transcript = {"transcript": None, "wer": None, "status": "not_available"}
+        prosody = {"status": "not_checked", "target_emotion": sample.target_emotion_snapshot}
+        try:
+            metrics = self.analyzer._analyze_wav(data)
+        except (wave.Error, EOFError, ValueError, IndexError):
+            return DeepCheckResult(DeepCheckDecision.REJECT, 0.0,
+                ["AUDIO_DECODE_FAILED", *unavailable], {}, transcript, prosody, checks,
+                {"technical_score": 0.0, "speech_activity_score": None, "noise_score": None,
+                 "transcript_score": None, "alignment_score": None, "prosody_score": None},
+                "File âm thanh chính thức bị lỗi và không thể kiểm tra. Câu đã được mở lại.")
+
+        # pilot_starting_point: conservative technical bounds; calibrate with validator-labelled audio.
+        technical_score = self.analyzer._score(metrics)
+        speech_score = round(max(0.0, min(1.0, metrics["speech_ratio"] / 0.65)), 3)
+        snr_score = round(max(0.0, min(1.0, metrics["estimated_snr_db"] / 20.0)), 3)
+        quality = round(0.55 * technical_score + 0.30 * speech_score + 0.15 * snr_score, 3)
+        components = {"technical_score": technical_score, "speech_activity_score": speech_score,
+            "noise_score": snr_score, "transcript_score": None, "alignment_score": None,
+            "prosody_score": None}
+        if metrics["duration_ms"] < 500 or metrics["clipping_ratio"] > 0.10:
+            reasons = (["TOO_SHORT"] if metrics["duration_ms"] < 500 else ["CLIPPING_DETECTED"])
+            return DeepCheckResult(DeepCheckDecision.REJECT, quality, [*reasons, *unavailable], metrics,
+                transcript, prosody, checks, components,
+                "Bản thu có lỗi kỹ thuật nghiêm trọng và câu đã được mở lại.")
+        if (metrics["silence_ratio"] > 0.65 or metrics["rms_dbfs"] < -42.0 or
+                metrics["clipping_ratio"] > 0.02):
+            reasons = []
+            if metrics["silence_ratio"] > 0.65: reasons.append("TOO_MUCH_SILENCE")
+            if metrics["rms_dbfs"] < -42.0: reasons.append("LOW_CONFIDENCE_AUDIO")
+            if metrics["clipping_ratio"] > 0.02: reasons.append("CLIPPING_DETECTED")
+            return DeepCheckResult(DeepCheckDecision.NEED_RETAKE_LATER, quality,
+                [*reasons, *unavailable], metrics, transcript, prosody, checks, components,
+                "Bản thu cần thu lại vì tín hiệu kỹ thuật chưa ổn định.")
+        return DeepCheckResult(DeepCheckDecision.PASS_TO_REVIEW, quality,
+            ["TECHNICAL_OK", *unavailable, "READY_FOR_VALIDATOR"], metrics, transcript, prosody,
+            checks, components,
+            "Kiểm tra kỹ thuật đã hoàn tất. Bản thu đang chờ Validator đánh giá.")
+
+
+# Backward-compatible import name for local callers; behavior is no longer emotion-based heuristic.
+HeuristicDeepCheckAdapter = TechnicalDeepCheckAdapter

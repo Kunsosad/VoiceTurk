@@ -119,7 +119,14 @@ class AudioSample(Entity):
     fast_check_status: str = "PASSED"
     deep_check_status: str = "PENDING"
     deep_check_reason_code: str | None = None
+    deep_check_reason_codes: list[str] = field(default_factory=list)
     deep_check_message_vi: str | None = None
+    deep_check_technical_metrics: dict[str, Any] = field(default_factory=dict)
+    deep_check_transcript_metrics: dict[str, Any] = field(default_factory=dict)
+    deep_check_prosody_metrics: dict[str, Any] = field(default_factory=dict)
+    deep_check_checks_available: dict[str, bool] = field(default_factory=dict)
+    deep_check_score_components: dict[str, float | None] = field(default_factory=dict)
+    deep_check_retry_count: int = 0
     deep_checked_at: datetime | None = None
     validator_status: str | None = None
     validator_id: str | None = None

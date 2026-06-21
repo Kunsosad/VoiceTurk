@@ -15,6 +15,7 @@ export type PrecheckCode =
   | 'UPLOAD_FAILED'
 
 export const PRECHECK = {
+  // pilot_starting_point: tune against validator-labelled Vietnamese recordings.
   minDurationMs: 900,
   maxDurationMs: 15000,
   minRmsDbfs: -45,

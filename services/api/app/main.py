@@ -1,6 +1,7 @@
 import logging
 import json
 import time
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -8,11 +9,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.adapters.http.router import router
-from app.composition.container import get_settings
+from app.composition.container import get_service, get_settings
+from app.jobs.deep_check_worker import DeepCheckWorker
 
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    worker = None
+    if settings.deep_check_worker_enabled:
+        worker = DeepCheckWorker(get_service(), settings.deep_check_poll_interval_seconds,
+                                 settings.deep_check_batch_size)
+        worker.start()
+    app.state.deep_check_worker = worker
+    try:
+        yield
+    finally:
+        if worker:
+            worker.stop()
+
+
 app = FastAPI(title="VoiceTurk API", version="0.2.0", docs_url="/docs" if settings.app_env != "production" else None,
-              redoc_url=None)
+              redoc_url=None, lifespan=lifespan)
 pipeline_logger = logging.getLogger("voiceturk.pipeline")
 request_logger = logging.getLogger("voiceturk.request")
 pipeline_logger.setLevel(logging.INFO)

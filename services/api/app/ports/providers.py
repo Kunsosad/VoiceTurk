@@ -19,9 +19,18 @@ class FastCheckResult:
 @dataclass
 class DeepCheckResult:
     decision: DeepCheckDecision
-    reason_code: str
-    message_vi: str
-    metadata: dict[str, Any]
+    quality_score: float
+    reason_codes: list[str]
+    technical_metrics: dict[str, Any] = field(default_factory=dict)
+    transcript_metrics: dict[str, Any] = field(default_factory=dict)
+    prosody_metrics: dict[str, Any] = field(default_factory=dict)
+    checks_available: dict[str, bool] = field(default_factory=dict)
+    score_components: dict[str, float | None] = field(default_factory=dict)
+    feedback_vi: str = ""
+
+    @property
+    def reason_code(self) -> str:
+        return self.reason_codes[0] if self.reason_codes else "DEEP_CHECK_COMPLETED"
 
 
 class ObjectStoragePort(ABC):

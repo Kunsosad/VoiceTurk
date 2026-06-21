@@ -249,7 +249,7 @@ Response:
 
 `GET /recording-sessions/{session_id}/retakes` and `GET /campaigns/{campaign_id}/retakes` return NEED_RETAKE items. `POST /recording-items/{item_id}/start-retake` reassigns one. `POST /recording-items/{item_id}/skip` returns an unrecorded assigned item to OPEN.
 
-`POST /deep-check/run-pending` recovers/enqueues CHECKING samples and processes the local queue. `GET /deep-check/status` returns queue/status counts. `POST /audio-samples/{sample_id}/deep-check/retry` retries DeepCheck errors.
+The backend worker automatically scans and processes durable CHECKING samples. `POST /deep-check/run-pending` is an admin/manual recovery fallback, not a frontend dependency. `GET /deep-check/status` returns queue/status counts. `POST /audio-samples/{sample_id}/deep-check/retry` retries DeepCheck errors.
 
 `GET /audio-samples/{sample_id}/checks` returns explainable FastCheck metrics and DeepCheck decision/feedback.
 
