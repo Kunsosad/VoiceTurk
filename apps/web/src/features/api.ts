@@ -10,6 +10,7 @@ import type {
   AuthResponse,
   Campaign,
   Coverage,
+  CoachStatus,
   Dataset,
   FastCheckResponse,
   NextAction,
@@ -99,6 +100,13 @@ export const api = {
     ),
   completeSession: (id: string) =>
     request(`/recording-sessions/${id}/complete`, json("POST")),
+  coachStatus: (id: string) =>
+    request<CoachStatus>(`/recording-sessions/${id}/coach/status`),
+  speakCoach: (id: string, body: { kind: "instruction" | "feedback"; message: string;
+    feedback_context?: Record<string, unknown> | null }) =>
+    request<CoachStatus>(`/recording-sessions/${id}/coach/speak`, json("POST", body)),
+  stopCoach: (id: string) =>
+    request<CoachStatus>(`/recording-sessions/${id}/coach/stop`, json("POST")),
   skipItem: (itemId: string) =>
     request(`/recording-items/${itemId}/skip`, json("POST")),
 

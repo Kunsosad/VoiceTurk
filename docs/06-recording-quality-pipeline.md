@@ -13,6 +13,8 @@ VoiceTurk keeps quality decisions backend-owned. Browser Pre-check blocks obviou
 
 No OpenAI, LLM, or ASR is used. DeepCheck explicitly emits `ASR_NOT_CONFIGURED`, `TEXT_CHECK_NOT_AVAILABLE`, and `PROSODY_NOT_CHECKED`; it never invents a transcript, WER, or emotion match.
 
+DeepCheck also persists a structured `feedback_context` containing the backend decision, reason codes, target text, available measured metrics, and coach constraints. A retake action returns that context with a deterministic Vietnamese template. Agora ConvoAI may eventually verbalize it, but the current verified delivery path is Browser TTS; neither voice provider may alter the decision or add reasons.
+
 ## Scientific traceability matrix
 
 Thresholds are pilot starting points guided by the research report, not universal limits prescribed by ITU. They require calibration with validator-labelled VoiceTurk audio.
@@ -40,3 +42,4 @@ Thresholds are pilot starting points guided by the research report, not universa
 - RMS, sample peak, energy VAD, and SNR are lightweight proxies; P.56 active level, BS.1770 LUFS/true peak, and robust VAD/SNR remain future adapters.
 - Thresholds are pilot starting points and need calibration against real recordings and Validator labels.
 - The worker is single-process MVP infrastructure; multi-process deployment needs a durable queue/claim mechanism.
+- Agora ConvoAI lifecycle is not runtime-verified. The adapter reports unavailable and the app uses Browser TTS rather than claiming an agent spoke.

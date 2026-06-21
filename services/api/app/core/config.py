@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     s3_presigned_expire_seconds: int = 900
     agora_app_id: str = ""
     agora_app_certificate: str = ""
+    agora_region: str = "global"
+    agora_feature_rtc: bool = False
+    agora_feature_rtm: bool = False
+    agora_feature_convoai: bool = False
+    agora_agent_uid: str = "123456"
     # pilot_starting_point: research-guided bounds requiring calibration on VoiceTurk pilot audio.
     fast_check_min_duration_ms: int = 900
     fast_check_max_duration_ms: int = 15000
@@ -75,6 +80,8 @@ class Settings(BaseSettings):
             raise ValueError("APP_ENV must be development, test, staging, or production")
         if self.password_hash_scheme != "bcrypt":
             raise ValueError("PASSWORD_HASH_SCHEME must be bcrypt")
+        if self.realtime_provider not in {"browser_tts", "agora", "agora_convoai"}:
+            raise ValueError("REALTIME_PROVIDER must be browser_tts, agora, or agora_convoai")
         if self.cookie_samesite not in {"lax", "strict", "none"}:
             raise ValueError("COOKIE_SAMESITE must be lax, strict, or none")
         if self.object_storage_provider == "minio" and not self.s3_public_base_url:

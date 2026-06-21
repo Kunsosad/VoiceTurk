@@ -129,6 +129,39 @@ class TechnicalDeepCheckAdapter(DeepCheckPort):
     def __init__(self) -> None:
         self.analyzer = RuleBasedFastCheckAdapter()
 
+    @staticmethod
+    def _feedback_context(sample: AudioSample, decision: DeepCheckDecision, reasons: list[str],
+                          metrics: dict[str, Any], transcript: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "sample_id": sample.sample_id,
+            "item_id": sample.item_id,
+            "decision": decision.value,
+            "reason_codes": reasons,
+            "target_transcript": sample.transcript_snapshot,
+            "asr_transcript": transcript.get("transcript"),
+            "missing_words": transcript.get("missing_words", []),
+            "extra_words": transcript.get("extra_words", []),
+            "target_emotion": sample.target_emotion_snapshot,
+            "metrics": {key: metrics.get(key) for key in
+                ("wer", "silence_ratio", "speech_ratio", "rms_dbfs", "clipping_ratio")
+                if metrics.get(key) is not None},
+            "coach_constraints": {
+                "language": "vi",
+                "max_sentences": 2,
+                "must_not_change_decision": True,
+                "must_not_add_new_reason": True,
+                "must_quote_target_transcript_if_text_error": True,
+            },
+        }
+
+    def _result(self, sample: AudioSample, decision: DeepCheckDecision, quality: float,
+                reasons: list[str], technical: dict[str, Any], transcript: dict[str, Any],
+                prosody: dict[str, Any], checks: dict[str, bool], components: dict[str, float | None],
+                feedback: str) -> DeepCheckResult:
+        context_metrics = {**technical, "wer": transcript.get("wer")}
+        return DeepCheckResult(decision, quality, reasons, technical, transcript, prosody, checks,
+            components, feedback, self._feedback_context(sample, decision, reasons, context_metrics, transcript))
+
     def analyze(self, sample: AudioSample, data: bytes) -> DeepCheckResult:
         unavailable = ["ASR_NOT_CONFIGURED", "TEXT_CHECK_NOT_AVAILABLE", "PROSODY_NOT_CHECKED"]
         checks = {"technical": True, "asr": False, "alignment": False, "prosody": False}
@@ -137,7 +170,7 @@ class TechnicalDeepCheckAdapter(DeepCheckPort):
         try:
             metrics = self.analyzer._analyze_wav(data)
         except (wave.Error, EOFError, ValueError, IndexError):
-            return DeepCheckResult(DeepCheckDecision.REJECT, 0.0,
+            return self._result(sample, DeepCheckDecision.REJECT, 0.0,
                 ["AUDIO_DECODE_FAILED", *unavailable], {}, transcript, prosody, checks,
                 {"technical_score": 0.0, "speech_activity_score": None, "noise_score": None,
                  "transcript_score": None, "alignment_score": None, "prosody_score": None},
@@ -153,7 +186,7 @@ class TechnicalDeepCheckAdapter(DeepCheckPort):
             "prosody_score": None}
         if metrics["duration_ms"] < 500 or metrics["clipping_ratio"] > 0.10:
             reasons = (["TOO_SHORT"] if metrics["duration_ms"] < 500 else ["CLIPPING_DETECTED"])
-            return DeepCheckResult(DeepCheckDecision.REJECT, quality, [*reasons, *unavailable], metrics,
+            return self._result(sample, DeepCheckDecision.REJECT, quality, [*reasons, *unavailable], metrics,
                 transcript, prosody, checks, components,
                 "Bản thu có lỗi kỹ thuật nghiêm trọng và câu đã được mở lại.")
         if (metrics["silence_ratio"] > 0.65 or metrics["rms_dbfs"] < -42.0 or
@@ -162,10 +195,10 @@ class TechnicalDeepCheckAdapter(DeepCheckPort):
             if metrics["silence_ratio"] > 0.65: reasons.append("TOO_MUCH_SILENCE")
             if metrics["rms_dbfs"] < -42.0: reasons.append("LOW_CONFIDENCE_AUDIO")
             if metrics["clipping_ratio"] > 0.02: reasons.append("CLIPPING_DETECTED")
-            return DeepCheckResult(DeepCheckDecision.NEED_RETAKE_LATER, quality,
+            return self._result(sample, DeepCheckDecision.NEED_RETAKE_LATER, quality,
                 [*reasons, *unavailable], metrics, transcript, prosody, checks, components,
                 "Bản thu cần thu lại vì tín hiệu kỹ thuật chưa ổn định.")
-        return DeepCheckResult(DeepCheckDecision.PASS_TO_REVIEW, quality,
+        return self._result(sample, DeepCheckDecision.PASS_TO_REVIEW, quality,
             ["TECHNICAL_OK", *unavailable, "READY_FOR_VALIDATOR"], metrics, transcript, prosody,
             checks, components,
             "Kiểm tra kỹ thuật đã hoàn tất. Bản thu đang chờ Validator đánh giá.")

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -88,6 +88,12 @@ class AgoraTokenRequest(BaseModel):
     channel: str
     uid: str
     role: str = "publisher"
+
+
+class CoachSpeakRequest(BaseModel):
+    kind: Literal["instruction", "feedback"] = "instruction"
+    message: str = Field(min_length=1, max_length=1000)
+    feedback_context: dict[str, Any] | None = None
 
 
 class RetakeStartRequest(BaseModel):

@@ -46,13 +46,6 @@ Passing files move from `tmp/audio/{session}/{item}/...` to `audio/{campaign}/{i
 
 ## Agora
 
-Frontend:
-
-```env
-NEXT_PUBLIC_REALTIME_PROVIDER=agora
-NEXT_PUBLIC_AGORA_APP_ID=your-app-id
-```
-
 Backend:
 
 ```env
@@ -61,7 +54,7 @@ AGORA_APP_ID=your-app-id
 AGORA_APP_CERTIFICATE=your-certificate
 ```
 
-The backend issues an RTC token in the session response or through `POST /realtime/agora/token`. The frontend joins/publishes a microphone track with `agora-rtc-sdk-ng`; Browser TTS remains the coach voice. If Agora is disabled or cannot join, recording and Browser TTS/text continue without Agora. Never commit credentials.
+The backend session response is the provider source of truth; no frontend provider flag is required. With Agora configured, the browser joins RTC, publishes its microphone, subscribes to remote audio, and reports the actual join/publish result in the Recording Studio. Browser TTS remains the coach voice until a ConvoAI lifecycle has been runtime-verified. If Agora is disabled or RTC join fails, recording and Browser TTS/text continue. Never commit credentials. See `docs/07-agora-realtime.md`.
 
 ## MinIO
 

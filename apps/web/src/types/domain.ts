@@ -52,12 +52,43 @@ export type RecordingItem = {
 };
 
 export type RealtimeInfo = {
-  provider: "agora" | "browser_tts";
+  provider: "agora" | "agora_convoai" | "browser_tts";
+  realtime_provider?: "agora" | "agora_convoai" | "browser_tts";
   agora_channel: string | null;
   agora_token: string | null;
   agora_app_id: string | null;
   uid: string;
+  agora_uid?: string;
   expires_at?: string;
+  coach_provider?: "agora_convoai" | "browser_tts" | "browser_tts_fallback";
+  convoai_available?: boolean;
+  coach_status?: "starting" | "ready" | "fallback" | "error";
+  coach_session_id?: string | null;
+  agora_agent_uid?: string | null;
+};
+
+export type CoachStatus = {
+  available: boolean;
+  provider: "agora_convoai" | "browser_tts";
+  status: string;
+  message?: string;
+  coach_session_id?: string | null;
+  agent_uid?: string | null;
+};
+
+export type FeedbackContext = {
+  sample_id?: string;
+  item_id?: string;
+  decision?: string;
+  reason_codes?: string[];
+  target_transcript?: string;
+  asr_transcript?: string | null;
+  missing_words?: string[];
+  extra_words?: string[];
+  target_emotion?: string;
+  context_brief?: string;
+  metrics?: Record<string, number>;
+  coach_constraints?: Record<string, string | number | boolean>;
 };
 
 export type Session = {
@@ -79,6 +110,7 @@ export type NextAction = {
     | "ERROR";
   item: RecordingItem | null;
   coach_message_vi: string;
+  feedback_context?: FeedbackContext | null;
   retake_count: number;
   progress: { completed: number; total: number };
   debug?: Record<string, unknown>;
@@ -136,6 +168,7 @@ export type Sample = {
   deep_check_status?: string;
   deep_check_reason_code?: string;
   deep_check_message_vi?: string;
+  deep_check_feedback_context?: FeedbackContext;
   speech_rate_wps?: number;
   pitch_summary?: string;
   // Review

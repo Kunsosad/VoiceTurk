@@ -7,6 +7,7 @@ from app.adapters.persistence.sqlite import SQLiteRepository
 from app.adapters.proof.local_hash import LocalHashProofAdapter
 from app.adapters.queue.in_process import InProcessJobQueueAdapter
 from app.adapters.realtime.agora import AgoraRealtimeTokenAdapter
+from app.adapters.realtime.convoai import AgoraConvoAIAdapter, AgoraConvoAIUnavailableAdapter
 from app.adapters.storage.local import LocalStorageAdapter
 from app.adapters.storage.minio import MinioStorageAdapter
 from app.application.service import VoiceTurkService
@@ -47,8 +48,11 @@ def get_service() -> VoiceTurkService:
         leading_silence_max_ms=settings.fast_check_leading_silence_max_ms,
         trailing_silence_max_ms=settings.fast_check_trailing_silence_max_ms,
         min_file_size_bytes=settings.fast_check_min_file_size_bytes)
-    realtime = AgoraRealtimeTokenAdapter(settings.agora_app_id, settings.agora_app_certificate) if settings.realtime_provider == "agora" else AgoraRealtimeTokenAdapter("", "")
+    uses_agora = settings.realtime_provider in {"agora", "agora_convoai"}
+    realtime = AgoraRealtimeTokenAdapter(settings.agora_app_id, settings.agora_app_certificate) if uses_agora else AgoraRealtimeTokenAdapter("", "")
+    coach_voice = (AgoraConvoAIAdapter(settings.agora_app_id, settings.agora_app_certificate,
+        settings.agora_agent_uid) if settings.realtime_provider == "agora_convoai" else AgoraConvoAIUnavailableAdapter())
     return VoiceTurkService(repository, storage, fast_check, TechnicalDeepCheckAdapter(), LocalHashProofAdapter(),
         InProcessJobQueueAdapter(), realtime,
         settings.local_export_dir, settings.keep_failed_uploads, settings.s3_presigned_expire_seconds,
-        settings.fast_check_timeout_seconds)
+        settings.fast_check_timeout_seconds, coach_voice)

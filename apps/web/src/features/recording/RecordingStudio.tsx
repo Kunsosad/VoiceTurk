@@ -48,6 +48,7 @@ type PipelineState =
 type PipelineEvent =
   | "SESSION_START_REQUEST"
   | "SESSION_START_RESPONSE"
+  | "REALTIME_STATUS"
   | "NEXT_ACTION_REQUEST"
   | "NEXT_ACTION_RESPONSE"
   | "ITEM_LOADED"
@@ -117,6 +118,7 @@ export function RecordingStudio({ campaignId }: Props) {
   const [retakes, setRetakes] = useState(0);
   const [lastCheck, setLastCheck] = useState<Record<string, unknown> | null>(null);
   const [micState, setMicState] = useState("not connected");
+  const [coachProvider, setCoachProvider] = useState("Coach unavailable");
   const [events, setEvents] = useState<Array<{ at: string; event: PipelineEvent; detail?: string }>>([]);
 
   const recorder = useRef(new BrowserMediaRecorder());
@@ -129,9 +131,19 @@ export function RecordingStudio({ campaignId }: Props) {
   const paused = useRef(false);
 
   useEffect(
-    () => () => {
-      clearTimers();
-      coach.leaveSession().catch(() => {});
+    () => {
+      const unsubscribe = coach.onConnectionStateChange((state) => {
+        log("REALTIME_STATUS", state);
+        if (state === "AGENT_READY") setCoachProvider("Coach: Agora ConvoAI · ready");
+        if (state.includes("FALLBACK") || state === "AGENT_LEFT_FALLBACK") {
+          setCoachProvider("Coach: Browser TTS fallback");
+        }
+      });
+      return () => {
+        unsubscribe();
+        clearTimers();
+        coach.leaveSession().catch(() => {});
+      };
     },
     [coach],
   );
@@ -158,9 +170,14 @@ export function RecordingStudio({ campaignId }: Props) {
       const value = await api.startSession(campaignId);
       log("SESSION_START_RESPONSE", `${value.session_id} · ${value.items.length} items`);
       setSession(value);
-      setMicState(value.realtime.provider === "agora" ? "Agora connecting" : "browser microphone");
-      await deadline(coach.joinSession({ session_id: value.session_id, realtime: value.realtime }), 10000, "REALTIME_JOIN");
-      setMicState(value.realtime.provider === "agora" ? "Agora connected" : "browser ready");
+      setMicState(value.realtime.provider === "browser_tts" ? "browser microphone" : "Agora connecting");
+      const joined = await deadline(coach.joinSession({ session_id: value.session_id, realtime: value.realtime }), 15000, "REALTIME_JOIN");
+      setMicState(joined.rtcJoined && joined.micPublished ? "Agora RTC · mic published" : "browser microphone");
+      const providerLabel = joined.voiceProvider === "agora_convoai" ? "Coach: Agora ConvoAI" :
+        joined.voiceProvider === "browser_tts_fallback" ? "Coach: Browser TTS fallback" :
+        joined.voiceProvider === "browser_tts" ? "Coach: Browser TTS" : "Coach unavailable · text only";
+      setCoachProvider(providerLabel);
+      log("REALTIME_STATUS", `${joined.transport} · joined=${joined.rtcJoined} · mic=${joined.micPublished} · ${joined.voiceProvider}`);
       await loadNext(value.session_id);
     } catch (error) {
       await pipelineError(error);
@@ -178,9 +195,14 @@ export function RecordingStudio({ campaignId }: Props) {
       setRetakes(action.retake_count);
       setMessage(action.coach_message_vi);
 
-      if (action.action === "START_ITEM" || action.action === "RETAKE_ITEM") {
+      if (action.action === "START_ITEM") {
         setItem(action.item);
         log("ITEM_LOADED", action.item?.item_id);
+        await prepareTask(action.item!);
+      } else if (action.action === "RETAKE_ITEM") {
+        setItem(action.item);
+        log("ITEM_LOADED", action.item?.item_id);
+        await deadline(coach.speakFeedback(action.coach_message_vi, action.feedback_context), 10000, "COACH_RETAKE_CONTEXT");
         await prepareTask(action.item!);
       } else if (action.action === "WAIT_DEEPCHECK") {
         setMachine("WAIT_DEEPCHECK");
@@ -613,6 +635,8 @@ export function RecordingStudio({ campaignId }: Props) {
               </dd>
               <dt>Microphone</dt>
               <dd style={{ fontSize: "0.78rem" }}>{micState}</dd>
+              <dt>Voice coach</dt>
+              <dd style={{ fontSize: "0.78rem" }}>{coachProvider}</dd>
               <dt>Retake queue</dt>
               <dd>{retakes}</dd>
               <dt>Session</dt>

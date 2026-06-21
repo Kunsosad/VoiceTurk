@@ -126,6 +126,7 @@ class AudioSample(Entity):
     deep_check_prosody_metrics: dict[str, Any] = field(default_factory=dict)
     deep_check_checks_available: dict[str, bool] = field(default_factory=dict)
     deep_check_score_components: dict[str, float | None] = field(default_factory=dict)
+    deep_check_feedback_context: dict[str, Any] = field(default_factory=dict)
     deep_check_retry_count: int = 0
     deep_checked_at: datetime | None = None
     validator_status: str | None = None

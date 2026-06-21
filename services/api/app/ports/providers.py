@@ -27,6 +27,7 @@ class DeepCheckResult:
     checks_available: dict[str, bool] = field(default_factory=dict)
     score_components: dict[str, float | None] = field(default_factory=dict)
     feedback_vi: str = ""
+    feedback_context: dict[str, Any] = field(default_factory=dict)
 
     @property
     def reason_code(self) -> str:
@@ -81,6 +82,43 @@ class RealtimeTokenPort(ABC):
     def configured(self) -> bool: ...
     @abstractmethod
     def issue_token(self, channel: str, uid: str, role: str, expires_seconds: int = 3600) -> dict[str, Any]: ...
+
+
+@dataclass
+class CoachVoiceResult:
+    available: bool
+    provider: str
+    status: str
+    message: str = ""
+    coach_session_id: str | None = None
+    agent_uid: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"available": self.available, "provider": self.provider, "status": self.status,
+                "message": self.message, "coach_session_id": self.coach_session_id,
+                "agent_uid": self.agent_uid}
+
+
+class CoachVoicePort(ABC):
+    """Boundary for an optional managed voice agent; never owns sample state."""
+
+    @abstractmethod
+    def configured(self) -> bool: ...
+    @abstractmethod
+    def start_coach_session(self, recording_session_id: str, channel_name: str, contributor_uid: str,
+                            task_context: dict[str, Any]) -> CoachVoiceResult: ...
+    @abstractmethod
+    def get_coach_status(self, recording_session_id: str,
+                         coach_session_id: str | None = None) -> CoachVoiceResult: ...
+    @abstractmethod
+    def speak_instruction(self, recording_session_id: str, instruction_context: dict[str, Any],
+                          coach_session_id: str | None = None) -> CoachVoiceResult: ...
+    @abstractmethod
+    def speak_feedback(self, recording_session_id: str, feedback_context: dict[str, Any],
+                       coach_session_id: str | None = None) -> CoachVoiceResult: ...
+    @abstractmethod
+    def stop_coach_session(self, recording_session_id: str,
+                           coach_session_id: str | None = None) -> CoachVoiceResult: ...
 
 
 class ProofProviderPort(ABC):

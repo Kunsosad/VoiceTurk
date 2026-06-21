@@ -13,7 +13,7 @@ from app.domain.entities import AudioSample, Campaign, DatasetVersion, Recording
 from app.domain.enums import (AudioSampleStatus, CampaignStatus, DatasetVersionStatus, DeepCheckDecision,
     RecordingItemStatus, RecordingSessionStatus, ScriptLineStatus, UserRole, ValidatorDecision)
 from app.domain.policies import validator_states
-from app.ports.providers import (DeepCheckPort, FastCheckPort, JobQueuePort, ObjectStoragePort,
+from app.ports.providers import (CoachVoicePort, DeepCheckPort, FastCheckPort, JobQueuePort, ObjectStoragePort,
                                  ProofProviderPort, RealtimeTokenPort)
 from app.ports.repositories import RepositoryPort
 
@@ -28,11 +28,13 @@ class VoiceTurkService:
     def __init__(self, repository: RepositoryPort, storage: ObjectStoragePort, fast_check: FastCheckPort,
                  deep_check: DeepCheckPort, proof: ProofProviderPort, queue: JobQueuePort,
                  realtime: RealtimeTokenPort, export_root: Path, keep_failed_uploads: bool = False,
-                 presigned_expire_seconds: int = 900, fast_check_timeout_seconds: float = 15.0) -> None:
+                 presigned_expire_seconds: int = 900, fast_check_timeout_seconds: float = 15.0,
+                 coach_voice: CoachVoicePort | None = None) -> None:
         self.repo, self.storage, self.fast_check = repository, storage, fast_check
         self.deep_check, self.proof, self.queue, self.realtime = deep_check, proof, queue, realtime
         self.export_root, self.keep_failed_uploads = export_root, keep_failed_uploads
         self.presigned_expire_seconds, self.fast_check_timeout_seconds = presigned_expire_seconds, fast_check_timeout_seconds
+        self.coach_voice = coach_voice
         self._deep_check_lock = RLock()
         self._deep_check_in_progress: set[str] = set()
 
@@ -213,16 +215,45 @@ class VoiceTurkService:
         session = RecordingSession(new_id("session"), campaign_id, contributor_id, status=RecordingSessionStatus.ACTIVE)
         self.repo.add("sessions", session)
         items = []
+        assigned_entities: list[RecordingItem] = []
         for item in self._campaign("items", campaign_id):
             if item.status == RecordingItemStatus.OPEN:
                 item.status, item.assigned_to, item.assigned_at = RecordingItemStatus.ASSIGNED, contributor_id, now()
                 self.repo.add("items", item)
+                assigned_entities.append(item)
                 items.append(self._item_dto(item))
-        realtime = {"provider": "browser_tts", "agora_channel": None, "agora_token": None, "agora_app_id": None, "uid": contributor_id}
+        realtime = {"provider": "browser_tts", "agora_channel": None, "agora_token": None,
+            "agora_app_id": None, "uid": contributor_id, "coach_provider": "browser_tts",
+            "convoai_available": False, "coach_status": "fallback", "coach_session_id": None,
+            "agora_agent_uid": None}
         if self.realtime.configured():
             token = self.realtime.issue_token(f"vt_{session.session_id}", contributor_id, "publisher")
-            realtime = {"provider": "agora", "agora_channel": token["channel"], "agora_token": token["token"],
-                        "agora_app_id": token["app_id"], "uid": contributor_id, "expires_at": token["expires_at"]}
+            coach_result = None
+            if self.coach_voice and self.coach_voice.configured():
+                first_item = assigned_entities[0] if assigned_entities else None
+                first_line = self._required("script_lines", first_item.line_id) if first_item else None
+                task_context = ({"transcript": first_line.transcript, "target_emotion": first_item.target_emotion,
+                    "context_brief": first_line.context_brief, "instruction": self._instruction(first_item)} if first_item else
+                    {"instruction": "Hãy chuẩn bị thu âm câu trên màn hình."})
+                try:
+                    coach_result = self.coach_voice.start_coach_session(session.session_id, token["channel"],
+                        contributor_id, task_context)
+                except Exception as exc:
+                    logger.warning(json.dumps({"event": "coach_start_fallback", "session_id": session.session_id,
+                        "error_type": type(exc).__name__}))
+                if coach_result and coach_result.coach_session_id:
+                    session.agora_session_id = coach_result.coach_session_id
+                    self.repo.add("sessions", session)
+            realtime = {"provider": "agora_convoai" if self.coach_voice and self.coach_voice.configured() else "agora",
+                        "realtime_provider": "agora_convoai" if self.coach_voice and self.coach_voice.configured() else "agora",
+                        "agora_channel": token["channel"], "agora_token": token["token"],
+                        "agora_app_id": token["app_id"], "uid": contributor_id, "expires_at": token["expires_at"],
+                        "agora_uid": contributor_id,
+                        "coach_provider": "agora_convoai" if coach_result and coach_result.available else "browser_tts_fallback",
+                        "convoai_available": bool(coach_result and coach_result.available),
+                        "coach_status": coach_result.status if coach_result else "fallback",
+                        "coach_session_id": coach_result.coach_session_id if coach_result else None,
+                        "agora_agent_uid": coach_result.agent_uid if coach_result else None}
         return {"session_id": session.session_id, "campaign_id": campaign_id, "contributor_id": contributor_id,
                 "status": session.status, "realtime": realtime, "items": items}
 
@@ -246,10 +277,12 @@ class VoiceTurkService:
                 "need_retake_count": sum(x.status == RecordingItemStatus.NEED_RETAKE for x in items),
                 "accepted_count": sum(x.status == RecordingItemStatus.ACCEPTED for x in items),
                 "submitted_in_session_count": len(samples), "reason": reason}
-        def response(action: str, item: RecordingItem | None, message: str, reason: str) -> dict[str, Any]:
+        def response(action: str, item: RecordingItem | None, message: str, reason: str,
+                     feedback_context: dict[str, Any] | None = None) -> dict[str, Any]:
             value = {"action": action, "item": self._item_dto(item) if item else None,
                 "coach_message_vi": message, "retake_count": self._retake_count(session.campaign_id),
-                "progress": self._progress(session.campaign_id), "debug": debug(reason)}
+                "feedback_context": feedback_context, "progress": self._progress(session.campaign_id),
+                "debug": debug(reason)}
             self._log("next_action_decided", action=action, reason_code=reason, **value["debug"])
             return value
         if session.status != RecordingSessionStatus.ACTIVE:
@@ -266,11 +299,14 @@ class VoiceTurkService:
             return response("START_ITEM", open_item, self._instruction(open_item), "open item assigned to active session")
         retake = next((x for x in items if x.status == RecordingItemStatus.NEED_RETAKE), None)
         if retake:
+            retake_sample = next((x for x in reversed(self.repo.list("samples"))
+                if x.item_id == retake.item_id and x.status == AudioSampleStatus.NEED_RETAKE), None)
             retake.status, retake.assigned_to, retake.assigned_at = RecordingItemStatus.ASSIGNED, session.contributor_id, now()
             self.repo.add("items", retake)
             return response("RETAKE_ITEM", retake,
+                retake_sample.deep_check_message_vi if retake_sample and retake_sample.deep_check_message_vi else
                 "Mình thấy có câu cần thu lại để dữ liệu tốt hơn. Mình sẽ hướng dẫn bạn đọc lại ngay bây giờ.",
-                "retake item assigned")
+                "retake item assigned", retake_sample.deep_check_feedback_context if retake_sample else None)
         checking = any(x.campaign_id == session.campaign_id and x.status == AudioSampleStatus.CHECKING for x in self.repo.list("samples"))
         if checking:
             return response("WAIT_DEEPCHECK", None, "DeepCheck đang xử lý nền.", "samples are still checking")
@@ -304,13 +340,49 @@ class VoiceTurkService:
 
     def complete_session(self, session_id: str) -> dict[str, Any]:
         session = self._required("sessions", session_id)
+        coach = self.stop_coach_session(session_id)
         for item in self._campaign("items", session.campaign_id):
             if item.assigned_to == session.contributor_id and item.status == RecordingItemStatus.ASSIGNED:
                 item.status, item.assigned_to, item.assigned_at = RecordingItemStatus.OPEN, None, None
                 self.repo.add("items", item)
         session.status, session.ended_at = RecordingSessionStatus.COMPLETED, now()
         self.repo.add("sessions", session)
-        return {"session_id": session_id, "status": session.status}
+        return {"session_id": session_id, "status": session.status, "coach_status": coach["status"]}
+
+    def coach_status(self, session_id: str) -> dict[str, Any]:
+        session = self._required("sessions", session_id)
+        if not self.coach_voice:
+            return {"available": False, "provider": "browser_tts", "status": "fallback",
+                    "coach_session_id": None, "agent_uid": None}
+        return self.coach_voice.get_coach_status(session_id, session.agora_session_id).to_dict()
+
+    def speak_coach(self, session_id: str, kind: str, message: str,
+                    feedback_context: dict[str, Any] | None = None) -> dict[str, Any]:
+        session = self._required("sessions", session_id)
+        if session.status != RecordingSessionStatus.ACTIVE or not self.coach_voice:
+            return {"available": False, "provider": "browser_tts", "status": "fallback",
+                    "coach_session_id": session.agora_session_id, "agent_uid": None}
+        safe_message = message.strip()[:1000]
+        if not safe_message:
+            raise ValueError("Coach message is required")
+        if kind == "feedback":
+            source = feedback_context or {}
+            safe_context = {key: source.get(key) for key in ("sample_id", "item_id", "decision", "reason_codes",
+                "target_transcript", "asr_transcript", "missing_words", "extra_words", "target_emotion",
+                "context_brief", "metrics", "coach_constraints")}
+            safe_context["message_vi"] = safe_message
+            result = self.coach_voice.speak_feedback(session_id, safe_context, session.agora_session_id)
+        else:
+            result = self.coach_voice.speak_instruction(session_id, {"instruction": safe_message},
+                                                        session.agora_session_id)
+        return result.to_dict()
+
+    def stop_coach_session(self, session_id: str) -> dict[str, Any]:
+        session = self._required("sessions", session_id)
+        if not self.coach_voice:
+            return {"available": False, "provider": "browser_tts", "status": "stopped",
+                    "coach_session_id": session.agora_session_id, "agent_uid": None}
+        return self.coach_voice.stop_coach_session(session_id, session.agora_session_id).to_dict()
 
     # Temporary upload -> FastCheck -> official sample
     def init_upload(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -480,6 +552,13 @@ class VoiceTurkService:
             sample.deep_check_prosody_metrics = result.prosody_metrics
             sample.deep_check_checks_available = result.checks_available
             sample.deep_check_score_components = result.score_components
+            feedback_context = dict(result.feedback_context)
+            feedback_context.setdefault("sample_id", sample.sample_id)
+            feedback_context.setdefault("item_id", sample.item_id)
+            feedback_context.setdefault("target_transcript", sample.transcript_snapshot)
+            feedback_context.setdefault("target_emotion", sample.target_emotion_snapshot)
+            feedback_context.setdefault("context_brief", self._required("script_lines", sample.line_id).context_brief)
+            sample.deep_check_feedback_context = feedback_context
             sample.quality_score = result.quality_score
             if result.decision == DeepCheckDecision.PASS_TO_REVIEW:
                 sample.status = AudioSampleStatus.REVIEW_PENDING
@@ -549,6 +628,7 @@ class VoiceTurkService:
                 "prosody_metrics": sample.deep_check_prosody_metrics,
                 "checks_available": sample.deep_check_checks_available,
                 "score_components": sample.deep_check_score_components,
+                "feedback_context": sample.deep_check_feedback_context,
                 "retry_count": sample.deep_check_retry_count}}
 
     def sample_audio(self, sample_id: str) -> tuple[bytes, str]:

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.adapters.auth.security import AuthenticationError, AuthManager
-from app.adapters.http.schemas import (AgoraTokenRequest, CampaignCreate, CampaignUpdate, DatasetBuildRequest,
+from app.adapters.http.schemas import (AgoraTokenRequest, CampaignCreate, CampaignUpdate, CoachSpeakRequest, DatasetBuildRequest,
     DatasetVerifyRequest, DebugStorageInitRequest, LoginRequest, RegisterRequest, RetakeStartRequest, ReviewRequest,
     ScriptLineInput, SessionStart, UploadCompleteRequest, UploadInitRequest)
 from app.application.service import VoiceTurkService
@@ -260,6 +260,27 @@ def skip_item(item_id: str, service: VoiceTurkService = Depends(get_service), us
 def complete_session(session_id: str, service: VoiceTurkService = Depends(get_service), user: User = Depends(current_user)):
     authorize_session(service, user, session_id)
     return service.complete_session(session_id)
+
+
+@router.get("/recording-sessions/{session_id}/coach/status")
+def coach_status(session_id: str, service: VoiceTurkService = Depends(get_service),
+                 user: User = Depends(current_user)):
+    authorize_session(service, user, session_id)
+    return service.coach_status(session_id)
+
+
+@router.post("/recording-sessions/{session_id}/coach/speak")
+def coach_speak(session_id: str, body: CoachSpeakRequest, service: VoiceTurkService = Depends(get_service),
+                user: User = Depends(current_user)):
+    authorize_session(service, user, session_id)
+    return service.speak_coach(session_id, body.kind, body.message, body.feedback_context)
+
+
+@router.post("/recording-sessions/{session_id}/coach/stop")
+def coach_stop(session_id: str, service: VoiceTurkService = Depends(get_service),
+               user: User = Depends(current_user)):
+    authorize_session(service, user, session_id)
+    return service.stop_coach_session(session_id)
 
 
 @router.post("/recording-items/{item_id}/submit-audio")
