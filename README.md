@@ -1,167 +1,20 @@
-# VoiceTurk Studio
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-VoiceTurk is a unified, coach-led Vietnamese prosody recording and dataset packaging MVP. One operator (`user_001`) creates campaigns, records, self-reviews, exports accepted samples, and verifies the manifest while the backend preserves separate `buyer_id`, `contributor_id`, and `validator_id` audit fields.
+# Run and deploy your AI Studio app
 
-## Architecture
+This contains everything you need to run your app locally.
 
-- FastAPI modular monolith with seven core domain entities and ports/adapters boundaries.
-- SQLite persistence; local object storage by default, MinIO through an S3-compatible adapter.
-- Deterministic decoded-audio FastCheck, automatic technical DeepCheck, self-review, and accepted-only dataset export.
-- React/Vite unified Studio with strict Agora Agent Studio mode or explicitly selected Browser TTS.
-- Agora owns realtime experience only. Object storage owns bytes only. Backend owns all business state.
+View your app in AI Studio: https://ai.studio/apps/c4a35de8-848e-4078-82db-fef56f3c40f8
 
-## Start locally
+## Run Locally
 
-```powershell
-cd services/api
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -e ".[test]"
-uvicorn app.main:app --reload --port 8000
-```
+**Prerequisites:**  Node.js
 
-```powershell
-cd apps/web
-pnpm install
-pnpm dev
-```
 
-Open `http://localhost:5173`, choose **Campaign**, and click **Seed 20-item demo**. The guided Recording step automatically speaks the instruction, listens, pre-checks, uploads, waits for FastCheck, gives feedback, and advances without a Next button.
-
-## Unified workflow
-
-1. Campaign: create/generate/activate or seed the active demo.
-2. Recording: start a session; coach-led state transitions and backend `next-action` drive tasks and retakes.
-3. Review & Retake: process pending DeepChecks, inspect metrics/feedback, and self-review as `user_001`.
-4. Dataset Export: package only ACCEPTED samples.
-5. Verify: verify the stored manifest hash and receive MATCH/MISMATCH.
-
-## Audio pipelines
-
-Client pipeline checks microphone permission/device/track/mute, no speech after 7 seconds, duration 0.9–15 seconds, RMS below -45 dBFS, peak below -35 dBFS, silence ratio above 0.65, clipping above 0.02, and upload failures. It records 16-bit PCM WAV so no FFmpeg is required.
-
-Backend FastCheck decodes WAV and checks integrity, size, PCM format, duration, RMS/peak dBFS, clipping, 20 ms-frame silence/speech ratios, speech duration, leading/trailing silence, estimated SNR, and a deterministic score. Hard failures create no AudioSample and no official object.
-
-Passing files move from `tmp/audio/{session}/{item}/...` to `audio/{campaign}/{item}/{sample}.wav`. A backend worker recovers durable CHECKING samples and runs model-free technical DeepCheck. `POST /deep-check/run-pending` remains a manual fallback; the frontend does not trigger it.
-
-## Agora
-
-Backend:
-
-```env
-REALTIME_PROVIDER=agora
-ALLOW_COACH_FALLBACK=false
-AGORA_APP_ID=your-app-id
-AGORA_APP_CERTIFICATE=your-certificate
-AGORA_CUSTOMER_ID=your-rest-customer-id
-AGORA_CUSTOMER_SECRET=your-rest-customer-secret
-AGORA_AGENT_NAME=your-published-agent-name
-AGORA_AGENT_PIPELINE_ID=your-studio-agent-id
-```
-
-The backend session response is the provider source of truth. It creates one RTC channel and separate contributor/agent tokens, then starts the published Agent Studio pipeline through the server-side Conversational AI `/join` API. The browser joins that exact channel, publishes its microphone, subscribes to remote audio, and only reports Agent Studio connected after the expected agent UID is observed. In strict mode, Agent start/detection failures are shown as errors and never speak through Browser TTS. Set `ALLOW_COACH_FALLBACK=true` only when that degradation is explicitly wanted. Never commit credentials. See `docs/07-agora-realtime.md`.
-
-Live Agent Studio probe:
-
-```powershell
-python services/api/scripts/probe_agora_agent_join.py
-python services/api/scripts/probe_agora_agent_join.py --print-client-token
-npm --prefix apps/web run dev
-```
-
-Open `http://localhost:5173/agora-agent-probe.html`, enter the emitted values, allow microphone access, and confirm `AGENT_JOINED` followed by `AGENT_AUDIO_SUBSCRIBED`. The token-printing flag is opt-in because RTC tokens are hidden by default.
-
-## MinIO
-
-Local storage remains the zero-configuration default. To use MinIO:
-
-```env
-OBJECT_STORAGE_PROVIDER=minio
-S3_ENDPOINT_URL=http://127.0.0.1:9000
-S3_PUBLIC_BASE_URL=http://127.0.0.1:9000
-S3_BUCKET_NAME=voiceturk
-S3_ACCESS_KEY_ID=minioadmin
-S3_SECRET_ACCESS_KEY=minioadmin
-S3_REGION=us-east-1
-S3_SECURE=false
-S3_PRESIGNED_EXPIRE_SECONDS=900
-```
-
-Start the optional local service with `docker compose up -d minio`. In development the adapter creates a missing bucket; staging/production fail clearly instead. `S3_ENDPOINT_URL` is used by the backend while `S3_PUBLIC_BASE_URL` signs browser-reachable URLs. They may differ when the backend uses `http://minio:9000` but the browser must use `http://localhost:9000`.
-
-Address selection:
-
-- Use `127.0.0.1:9000` when backend and browser run on the same computer.
-- Use the machine’s `192.168.x.x:9000` address for another device on the same LAN.
-- Use a `100.x.x.x:9000` address only when both devices can reach it through Tailscale/VPN.
-- Never leave `S3_PUBLIC_BASE_URL` empty when the browser uploads directly.
-- Use `S3_REGION=us-east-1`. The adapter accepts legacy `auto` by normalizing it and returning a warning.
-
-The repository-root `.env` is the canonical backend configuration even when Uvicorn starts from `services/api`. Real credentials belong only in `.env`; examples use local-only defaults/placeholders.
-
-Configure local CORS after installing MinIO Client (`mc`):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\configure_minio_cors.ps1
-```
-
-This permits the localhost/127.0.0.1 frontend origins on ports 3000 and 5173, upload/read methods and preflight, all request headers, and exposes ETag/content headers. Local uploads use the same init/complete application flow via a backend PUT endpoint.
-
-Run backend-side MinIO diagnostics:
-
-```powershell
-python scripts/check_minio_connection.py
-```
-
-It masks credentials, checks connection/auth/bucket, performs direct and presigned uploads, validates CORS preflight, verifies objects, and cleans up. With the API running, `GET /debug/storage/health` exposes the same development-only readiness without secrets. In the Campaign tab, **Run storage probe** executes a real browser PUT to distinguish browser routing/CORS from backend connectivity.
-
-Run the complete API-to-MinIO recording upload smoke test:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke_storage_upload.ps1
-```
-
-## Recording stuck after pre-check
-
-Open the browser Network tab and the Studio debug timeline. A successful attempt shows:
-
-```text
-POST /audio/uploads/init
-PUT {presigned MinIO/S3 URL}
-POST /audio/uploads/complete
-GET /recording-sessions/{id}/next-action
-```
-
-The frontend enforces 10-second upload-init/next-action deadlines, a 30-second PUT deadline, and a 20-second upload-complete deadline. Backend FastCheck has a 15-second deadline. A timeout moves the UI to `PIPELINE_ERROR` or returns `FAST_CHECK_TIMEOUT`; Retry keeps the same item.
-
-Common causes:
-
-1. Browser-unreachable signed host: `http://minio:9000` works inside Docker but not in the browser. Set `S3_PUBLIC_BASE_URL=http://localhost:9000`; URLs are signed with that host and are never rewritten afterward.
-2. MinIO CORS: run the CORS script and confirm the frontend origin is listed. S3-compatible servers handle OPTIONS preflight from the configured PUT/GET/POST/HEAD rules.
-3. Content-Type mismatch: upload init signs the actual Blob type and browser PUT sends that exact type.
-4. Missing bucket: development auto-creates `S3_BUCKET_NAME`; staging/production intentionally fail.
-5. Upload complete absent: inspect `UPLOAD_INIT_*` and `PRESIGNED_PUT_*` timeline events to locate the terminal step.
-6. FastCheck timeout: inspect backend `voiceturk.pipeline` JSON logs for `FAST_CHECK_TIMEOUT`.
-7. DeepCheck blocking: this is a bug—completion returns `CONTINUE_NEXT` immediately after enqueue; DeepCheck runs separately.
-
-## Seed and checks
-
-With the API running:
-
-```powershell
-python scripts/seed_demo.py
-```
-
-Run all backend, architecture, type, and build checks:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke_test.ps1
-```
-
-## Known limitations
-
-- ASR, alignment, and emotion/prosody checks are explicitly unavailable; no transcript or emotion score is fabricated.
-- The API-process scanner is restart-recoverable from CHECKING samples but is not a multi-process production worker.
-- MinIO and Agora code paths require external services/credentials and are not exercised by the default offline test.
-- The Agora SDK increases the initial frontend bundle; lazy loading is a recommended follow-up.
-- FastCheck supports 16-bit mono/stereo PCM WAV. Other containers require a future decoder adapter.
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

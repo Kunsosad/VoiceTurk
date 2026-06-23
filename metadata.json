@@ -1,0 +1,10 @@
+{
+  "name": "Remix: VoiceTurk",
+  "description": "Trusted Vietnamese conversational voice datasets for customer support AI",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

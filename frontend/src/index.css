@@ -1,0 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --color-base-bg: #050509;
+  --color-deep-bg: #0B0B12;
+  --color-teal-accent: #0E7C86;
+  --color-ai-violet: #8B5CF6;
+  --color-warm-amber: #F59E0B;
+  --color-accent-success: #2DD4BF;
+  --color-accent-warning: #FBBF24;
+  --color-accent-danger: #F87171;
+}
+
+body {
+  background-color: #050509;
+  color: #F7F4ED;
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* Custom scrolling list premium scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+/* Grid overlay background mimic */
+.bg-grid-pattern {
+  background-size: 40px 40px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+}
+
+.radial-glow-violet {
+  background: radial-gradient(circle at 50% 50%, rgba(139, 92, 246, 0.15) 0%, transparent 60%);
+}
+
+.radial-glow-teal {
+  background: radial-gradient(circle at 50% 50%, rgba(14, 124, 134, 0.15) 0%, transparent 60%);
+}
+
+@keyframes wave-dance {
+  0% {
+    transform: scaleY(0.3);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scaleY(1.0);
+    opacity: 1;
+  }
+}
+
+@keyframes wave-slow {
+  0% { transform: translateX(0%) scaleY(1); }
+  50% { transform: translateX(-5%) scaleY(1.1); }
+  100% { transform: translateX(0%) scaleY(1); }
+}
+
+@keyframes wave-fast {
+  0% { transform: translateX(0%) scaleY(0.9); opacity: 0.4; }
+  50% { transform: translateX(-10%) scaleY(1.15); opacity: 0.8; }
+  100% { transform: translateX(0%) scaleY(0.9); opacity: 0.4; }
+}
+
+@keyframes wave-reverse {
+  0% { transform: translateX(-8%) scaleY(1.1); }
+  50% { transform: translateX(0%) scaleY(0.85); }
+  100% { transform: translateX(-8%) scaleY(1.1); }
+}
+
+

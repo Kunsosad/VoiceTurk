@@ -1,7 +1,0 @@
-{
-  "upload_id": "upload_001",
-  "object_key": "tmp/audio/session_001/item_001/uuid.wav",
-  "upload_url": "/audio/uploads/upload_001/content",
-  "upload_method": "PUT",
-  "expires_in": 900
-}
