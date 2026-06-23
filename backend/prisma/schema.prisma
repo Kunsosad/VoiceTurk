@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    String                 @id @default(cuid())
+  role                  String
+  fullName              String
+  email                 String                 @unique
+  avatarUrl             String?
+  walletAddress         String?
+  createdAt             DateTime               @default(now())
+  campaigns             Campaign[]             @relation("CampaignBuyer")
+  recordings            Recording[]            @relation("RecordingContributor")
+  reviews               Review[]                @relation("ReviewBuyer")
+  walletAccounts        WalletAccount[]
+  agreements            ContributorAgreement[]
+  conversationSessions  ConversationSession[]
+  financeLedgers        FinanceLedger[]
+  certificates          Certificate[]
+}
+
+model WalletAccount {
+  id            String   @id @default(cuid())
+  userId        String
+  walletAddress String   @unique
+  smartWallet   String?
+  provider      String
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Campaign {
+  id                          String                 @id @default(cuid())
+  buyerId                     String
+  name                        String
+  description                 String
+  context                     String
+  aiCustomerRole              String
+  contributorRole             String
+  conversationBoundary        String
+  maxTurnsPerSide             Int                    @default(5)
+  targetAcceptedRecordings    Int
+  rewardPerAcceptedRecording  Int
+  budgetSecured               Int                    @default(0)
+  platformFee                 Int                    @default(0)
+  status                      String                 @default("Draft")
+  createdAt                   DateTime               @default(now())
+  updatedAt                   DateTime               @updatedAt
+  buyer                       User                   @relation("CampaignBuyer", fields: [buyerId], references: [id])
+  recordings                  Recording[]
+  agreements                  ContributorAgreement[]
+  conversationSessions        ConversationSession[]
+  financeLedgers              FinanceLedger[]
+  certificates                Certificate[]
+}
+
+model ContributorAgreement {
+  id             String       @id @default(cuid())
+  campaignId     String
+  contributorId  String
+  status         String
+  rewardRule     String
+  termsText      String
+  customDetails  String?
+  acceptedAt     DateTime?
+  certificateId  String?      @unique
+  campaign       Campaign     @relation(fields: [campaignId], references: [id])
+  contributor    User         @relation(fields: [contributorId], references: [id])
+  certificate    Certificate? @relation("AgreementCertificate", fields: [certificateId], references: [id])
+
+  @@unique([campaignId, contributorId])
+}
+
+model ConversationSession {
+  id                 String      @id @default(cuid())
+  campaignId         String
+  contributorId      String
+  agoraChannel       String      @unique
+  contributorRtcUid  Int
+  agentName          String
+  agentJoinMode      String
+  maxTurnsPerSide    Int
+  status             String
+  startedAt          DateTime    @default(now())
+  endedAt            DateTime?
+  campaign           Campaign    @relation(fields: [campaignId], references: [id])
+  contributor        User        @relation(fields: [contributorId], references: [id])
+  recordings         Recording[]
+}
+
+model Recording {
+  id                String               @id @default(cuid())
+  campaignId        String
+  contributorId     String
+  sessionId         String?
+  audioUrl          String
+  durationSeconds   Int
+  status            String               @default("Pending review")
+  recordingNumber   Int
+  contextSnapshot   String
+  audioQualityJson  String
+  createdAt         DateTime             @default(now())
+  campaign          Campaign             @relation(fields: [campaignId], references: [id])
+  contributor       User                 @relation("RecordingContributor", fields: [contributorId], references: [id])
+  session           ConversationSession? @relation(fields: [sessionId], references: [id])
+  review            Review?
+  financeLedger     FinanceLedger?       @relation("RecordingPayout")
+
+  @@unique([campaignId, recordingNumber])
+}
+
+model Review {
+  id                       String    @id @default(cuid())
+  recordingId              String    @unique
+  buyerId                  String
+  decision                 String
+  audioClarity             Int
+  roleFit                  Int
+  scenarioHandling         Int
+  conversationNaturalness  Int
+  brandSafety              Int
+  totalScore               Int
+  note                     String?
+  createdAt                DateTime  @default(now())
+  recording                Recording @relation(fields: [recordingId], references: [id])
+  buyer                    User      @relation("ReviewBuyer", fields: [buyerId], references: [id])
+}
+
+model FinanceLedger {
+  id           String     @id @default(cuid())
+  type         String
+  status       String
+  amount       Int
+  campaignId   String?
+  userId       String?
+  recordingId  String?    @unique
+  walletAddress String?
+  createdAt    DateTime   @default(now())
+  campaign     Campaign?  @relation(fields: [campaignId], references: [id])
+  user         User?      @relation(fields: [userId], references: [id])
+  recording    Recording? @relation("RecordingPayout", fields: [recordingId], references: [id])
+}
+
+model Certificate {
+  id             String                 @id @default(cuid())
+  type           String
+  title          String
+  campaignId     String?
+  userId         String?
+  subjectId      String
+  status         String
+  partiesJson    String
+  summary        String
+  proofRecordId  String?                @unique
+  createdAt      DateTime               @default(now())
+  campaign       Campaign?              @relation(fields: [campaignId], references: [id])
+  user           User?                  @relation(fields: [userId], references: [id])
+  proofRecord    ProofRecord?           @relation(fields: [proofRecordId], references: [id])
+  agreement      ContributorAgreement?  @relation("AgreementCertificate")
+
+  @@unique([type, subjectId])
+}
+
+model ProofRecord {
+  id             String       @id @default(cuid())
+  type           String
+  subjectId      String
+  network        String
+  status         String
+  walletAddress  String?
+  proofRef       String
+  txSignature    String
+  payloadHash    String
+  createdAt      DateTime     @default(now())
+  certificate    Certificate?
+
+  @@unique([type, subjectId])
+}
