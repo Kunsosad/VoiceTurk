@@ -142,6 +142,12 @@ De nut "Continue with Google" hoat dong, tao OAuth Web Client trong Google Cloud
 https://domain-cua-ban.com
 ```
 
+Voi domain demo hien tai:
+
+```env
+VITE_GOOGLE_CLIENT_ID=604757618847-tlp0kngnbum40nh699g3ro4jacvb5v76.apps.googleusercontent.com
+```
+
 Build frontend:
 
 ```bash
@@ -279,3 +285,41 @@ npm install
 npm run build
 systemctl reload nginx
 ```
+
+Neu vua them hoac sua `VITE_GOOGLE_CLIENT_ID`, phai build lai frontend tu thu muc goc `VoiceTurk` nhu tren. Khong build trong `frontend/` vi thu muc do khong co `package.json`.
+
+## 15. Kiem tra Google login sau deploy
+
+Mo tab an danh:
+
+```text
+https://domain-cua-ban.com
+```
+
+Bam `Continue with Google`.
+
+Neu loi, mo DevTools va kiem tra:
+
+```text
+POST https://api.domain-cua-ban.com/api/auth/google-login
+```
+
+Cac loi thuong gap:
+
+```text
+404 /api/auth/google-login
+```
+
+Backend tren VPS chua pull code moi hoac PM2 chua restart.
+
+```text
+VITE_GOOGLE_CLIENT_ID is missing
+```
+
+Chua tao `frontend/.env` tren VPS hoac chua build lai frontend sau khi them bien.
+
+```text
+origin_not_allowed
+```
+
+Google Cloud OAuth Client chua them dung Authorized JavaScript origin, vi du `https://domain-cua-ban.com`.
