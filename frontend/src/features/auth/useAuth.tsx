@@ -9,6 +9,7 @@ interface AuthContextType {
   isLoading: boolean;
   login: (payload: LoginPayload) => Promise<AuthUser>;
   register: (payload: RegisterPayload) => Promise<AuthUser>;
+  googleLogin: (accessToken: string, role: UserRole) => Promise<AuthUser>;
   logout: () => Promise<void>;
   switchRole: (role: UserRole) => void;
   setUser: (user: AuthUser | null) => void;
@@ -61,6 +62,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const googleLogin = async (accessToken: string, role: UserRole): Promise<AuthUser> => {
+    setIsLoading(true);
+    try {
+      const authUser = await mockAuthApi.googleLogin(accessToken, role);
+      setUser(authUser);
+      return authUser;
+    } catch (error) {
+      setIsLoading(false);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const logout = async (): Promise<void> => {
     setIsLoading(true);
     try {
@@ -94,6 +109,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         login,
         register,
+        googleLogin,
         logout,
         switchRole,
         setUser

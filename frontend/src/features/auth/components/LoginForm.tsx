@@ -3,6 +3,7 @@ import { useAuth } from '../useAuth';
 import { RoleSelector } from './RoleSelector';
 import { UserRole } from '../authTypes';
 import { Chrome } from 'lucide-react';
+import { requestGoogleAccessToken } from '../googleIdentity';
 
 interface LoginFormProps {
   onSuccess: (role: UserRole) => void;
@@ -10,7 +11,7 @@ interface LoginFormProps {
 }
 
 export function LoginForm({ onSuccess, onToggleButton }: LoginFormProps) {
-  const { login } = useAuth();
+  const { login, googleLogin } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<UserRole>('buyer');
@@ -45,17 +46,11 @@ export function LoginForm({ onSuccess, onToggleButton }: LoginFormProps) {
     setError(null);
     setIsLoading(true);
     try {
-      // Mock Google OAuth sequence
-      await new Promise(resolve => setTimeout(resolve, 800));
-      const emailPrefix = role === 'buyer' ? 'buyer.google' : 'contributor.google';
-      await login({
-        email: `${emailPrefix}@gmail.com`,
-        password: 'google-sso-bypass-key-12345',
-        role
-      });
+      const accessToken = await requestGoogleAccessToken();
+      await googleLogin(accessToken, role);
       onSuccess(role);
     } catch (err: any) {
-      setError('Google Sign-In failed. Please try again.');
+      setError(err?.message || 'Google Sign-In failed. Please try again.');
     } finally {
       setIsLoading(false);
     }

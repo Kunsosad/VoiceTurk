@@ -133,6 +133,13 @@ Noi dung:
 ```env
 VITE_USE_REAL_API=true
 VITE_API_BASE_URL=https://api.domain-cua-ban.com
+VITE_GOOGLE_CLIENT_ID=google-oauth-web-client-id.apps.googleusercontent.com
+```
+
+De nut "Continue with Google" hoat dong, tao OAuth Web Client trong Google Cloud va them authorized JavaScript origin:
+
+```text
+https://domain-cua-ban.com
 ```
 
 Build frontend:
@@ -272,4 +279,3 @@ npm install
 npm run build
 systemctl reload nginx
 ```
-

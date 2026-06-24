@@ -8,6 +8,11 @@ export const demoLoginSchema = z.object({
   email: z.string().trim().email().transform((value) => value.toLowerCase()),
 }).strict();
 
+export const googleLoginSchema = z.object({
+  accessToken: z.string().trim().min(1),
+  role: roleSchema,
+}).strict();
+
 export const lazorkitLoginSchema = z.object({
   walletAddress: z.string().trim().min(1).optional(),
   smartWallet: z.string().trim().min(1).optional(),

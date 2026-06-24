@@ -3,6 +3,7 @@ import { useAuth } from '../useAuth';
 import { RoleSelector } from './RoleSelector';
 import { UserRole } from '../authTypes';
 import { Chrome } from 'lucide-react';
+import { requestGoogleAccessToken } from '../googleIdentity';
 
 interface RegisterFormProps {
   onSuccess: (role: UserRole) => void;
@@ -10,7 +11,7 @@ interface RegisterFormProps {
 }
 
 export function RegisterForm({ onSuccess, onToggleButton }: RegisterFormProps) {
-  const { register } = useAuth();
+  const { register, googleLogin } = useAuth();
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -64,18 +65,11 @@ export function RegisterForm({ onSuccess, onToggleButton }: RegisterFormProps) {
     setError(null);
     setIsLoading(true);
     try {
-      // Mock Google OAuth sequence
-      await new Promise(resolve => setTimeout(resolve, 800));
-      const isBuyer = role === 'buyer';
-      await register({
-        fullName: isBuyer ? 'Vy Tran (Google)' : 'Minh Pham (Google)',
-        email: isBuyer ? 'buyer.google@gmail.com' : 'contributor.google@gmail.com',
-        password: 'google-sso-bypass-key-12345',
-        role
-      });
+      const accessToken = await requestGoogleAccessToken();
+      await googleLogin(accessToken, role);
       onSuccess(role);
     } catch (err: any) {
-      setError('Google registration failed. Please try again.');
+      setError(err?.message || 'Google registration failed. Please try again.');
     } finally {
       setIsLoading(false);
     }

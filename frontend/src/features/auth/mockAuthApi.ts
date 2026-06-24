@@ -1,4 +1,4 @@
-import { AuthUser, LoginPayload, RegisterPayload } from './authTypes';
+import { AuthUser, LoginPayload, RegisterPayload, UserRole } from './authTypes';
 import { safeStorage } from '../../shared/safeStorage';
 import { realAuthApi } from '../../shared/realApi';
 
@@ -67,6 +67,21 @@ const localMockAuthApi = {
   async logout(): Promise<void> {
     await sleep(DELAY_MS);
     safeStorage.removeItem(STORAGE_KEY);
+  },
+
+  async googleLogin(accessToken: string, role: UserRole): Promise<AuthUser> {
+    await sleep(DELAY_MS);
+    if (!accessToken) throw new Error('Google Sign-In did not return an access token');
+    const mockUser: AuthUser = {
+      id: `usr-${Math.random().toString(36).substr(2, 9)}`,
+      fullName: role === 'buyer' ? 'Vy Tran (Google)' : 'Minh Pham (Google)',
+      email: role === 'buyer' ? 'buyer.google@gmail.com' : 'contributor.google@gmail.com',
+      role,
+      avatarInitials: role === 'buyer' ? 'VT' : 'MP',
+      createdAt: new Date().toISOString(),
+    };
+    safeStorage.setItem(STORAGE_KEY, JSON.stringify(mockUser));
+    return mockUser;
   },
 
   async getCurrentUser(): Promise<AuthUser | null> {

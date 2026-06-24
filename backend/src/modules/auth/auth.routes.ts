@@ -6,7 +6,7 @@ import { asyncHandler } from "../../shared/asyncHandler.js";
 import { sendSuccess } from "../../shared/response.js";
 import { parseInput } from "../../shared/validators.js";
 import { requireAuth } from "./auth.middleware.js";
-import { demoLoginSchema, lazorkitLoginSchema } from "./auth.schemas.js";
+import { demoLoginSchema, googleLoginSchema, lazorkitLoginSchema } from "./auth.schemas.js";
 import { issueToken, mapDemoLoginUser, mapLazorkitUser } from "./auth.service.js";
 
 export const authRouter = Router();
@@ -18,6 +18,37 @@ authRouter.post("/demo-login", asyncHandler(async (req, res) => {
     where: { email: input.email },
     update: { role: input.role, fullName: input.fullName },
     create: input,
+  });
+  return sendSuccess(res, { user: mapDemoLoginUser(user), token: issueToken(user) });
+}));
+
+authRouter.post("/google-login", asyncHandler(async (req, res) => {
+  const input = parseInput(googleLoginSchema, req.body);
+  const googleResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${input.accessToken}` },
+  });
+
+  if (!googleResponse.ok) {
+    throw new AppError(401, "GOOGLE_AUTH_FAILED", "Google account verification failed");
+  }
+
+  const profile = await googleResponse.json() as {
+    email?: string;
+    email_verified?: boolean;
+    name?: string;
+  };
+  if (!profile.email || !profile.email_verified) {
+    throw new AppError(401, "GOOGLE_EMAIL_UNVERIFIED", "Google email is not verified");
+  }
+
+  const user = await prisma.user.upsert({
+    where: { email: profile.email.toLowerCase() },
+    update: { role: input.role, fullName: profile.name ?? profile.email },
+    create: {
+      email: profile.email.toLowerCase(),
+      fullName: profile.name ?? profile.email,
+      role: input.role,
+    },
   });
   return sendSuccess(res, { user: mapDemoLoginUser(user), token: issueToken(user) });
 }));

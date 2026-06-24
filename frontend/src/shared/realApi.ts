@@ -142,6 +142,10 @@ export const realAuthApi = {
     const result = await apiRequest<BackendLogin>('/api/auth/demo-login', { method: 'POST', body: { role: toBackendRole(payload.role), fullName: payload.fullName, email: payload.email } });
     apiToken.set(result.token); const user = toAuthUser(result.user); safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(user)); return user;
   },
+  async googleLogin(accessToken: string, role: UserRole): Promise<AuthUser> {
+    const result = await apiRequest<BackendLogin>('/api/auth/google-login', { method: 'POST', body: { accessToken, role: toBackendRole(role) } });
+    apiToken.set(result.token); const user = toAuthUser(result.user); safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(user)); return user;
+  },
   async logout(): Promise<void> { apiToken.clear(); safeStorage.removeItem(AUTH_USER_KEY); },
   async getCurrentUser(): Promise<AuthUser | null> {
     if (!apiToken.get()) return null;
