@@ -7,7 +7,7 @@ import { authRouter } from "./modules/auth/auth.routes.js";
 import { campaignRouter } from "./modules/campaigns/campaign.routes.js";
 import { certificateRouter } from "./modules/certificates/certificate.routes.js";
 import { conversationRouter } from "./modules/conversations/conversation.routes.js";
-import { buyerFinanceRouter, contributorFinanceRouter } from "./modules/finance/finance.routes.js";
+import { buyerFinanceRouter, contributorFinanceRouter, contributorWithdrawalRouter } from "./modules/finance/finance.routes.js";
 import { campaignRecordingRouter, recordingRouter } from "./modules/recordings/recording.routes.js";
 import { reviewRouter } from "./modules/reviews/review.routes.js";
 import { solanaRouter } from "./solana/lazorkit.routes.js";
@@ -37,6 +37,7 @@ app.use("/api/recordings", storageRouter);
 app.use("/api/recordings", recordingRouter);
 app.use("/api/buyer/finance", buyerFinanceRouter);
 app.use("/api/contributor/finance", contributorFinanceRouter);
+app.use("/api/contributor/withdraw", contributorWithdrawalRouter);
 app.use("/api/certificates", certificateRouter);
 
 app.use(notFoundHandler);

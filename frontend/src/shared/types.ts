@@ -28,7 +28,7 @@ export interface Campaign {
   payoutAccrued: number;
   platformFee?: number; // compat
   totalBudget?: number; // compat
-  status: 'Draft' | 'TermsPending' | 'Active' | 'Completed';
+  status: 'Draft' | 'Active' | 'Reviewing' | 'Completed';
   dateCreated?: string;
   chatHistory?: ChatMessage[];
   industry?: string;
@@ -51,6 +51,7 @@ export interface Recording {
   quality?: string;
   contextSnapshot: string;
   audioDurationSec: number;
+  audioUrl?: string;
   retakeReason?: string;
   transcript?: string;
   customerContext?: string;

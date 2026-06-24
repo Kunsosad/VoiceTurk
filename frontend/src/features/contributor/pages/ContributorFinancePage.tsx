@@ -12,6 +12,7 @@ interface ContributorFinancePageProps {
   contributorBalance: number;
   setContributorBalance: React.Dispatch<React.SetStateAction<number>>;
   onToast?: (msg: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
+  onWithdraw?: (amount: number) => Promise<boolean>;
   onNavigate: (view: AppView) => void;
 }
 
@@ -21,6 +22,7 @@ export function ContributorFinancePage({
   contributorBalance,
   setContributorBalance,
   onToast,
+  onWithdraw,
   onNavigate
 }: ContributorFinancePageProps) {
   const [withdrawMethod, setWithdrawMethod] = useState<'vietqr' | 'momo' | 'zalopay'>('vietqr');
@@ -40,9 +42,9 @@ export function ContributorFinancePage({
   const [accountNum, setAccountNum] = useState<string>('1903 8219 2818 012');
   const [accountName, setAccountName] = useState<string>('MINH PHAM');
 
-  const minWithdrawThreshold = 50000;
+  const minWithdrawThreshold = 8000;
 
-  const triggerWithdraw = () => {
+  const triggerWithdraw = async () => {
     const amt = parseInt(withdrawAmountStr) || 0;
     if (amt < minWithdrawThreshold) {
       if (onToast) onToast(`Minimum withdrawal limit must be at least ${formatMoneyVND(minWithdrawThreshold)}!`, 'warning');
@@ -54,7 +56,13 @@ export function ContributorFinancePage({
     }
 
     setIsProcessingWithdraw(true);
-    setTimeout(() => {
+    try {
+      if (onWithdraw) {
+        const accepted = await onWithdraw(amt);
+        if (!accepted) throw new Error('Withdrawal was not accepted');
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 1100));
+      }
       setContributorBalance(prev => prev - amt);
       const newTxn = {
         id: `TXN-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -69,7 +77,10 @@ export function ContributorFinancePage({
       setWithdrawSuccessBanner(`Express payout of ${formatMoneyVND(amt)} has been successfully processed to your selected destination.`);
       if (onToast) onToast("Payout successful!", "success");
       setTimeout(() => setWithdrawSuccessBanner(null), 5000);
-    }, 1100);
+    } catch (error: any) {
+      setIsProcessingWithdraw(false);
+      if (onToast) onToast(error?.message || 'Withdrawal failed', 'error');
+    }
   };
 
   const contributionList = recordings.filter(r => r.status === 'Accepted');

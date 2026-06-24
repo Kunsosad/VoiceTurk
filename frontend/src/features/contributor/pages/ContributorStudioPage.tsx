@@ -3,10 +3,11 @@ import { motion } from 'motion/react';
 import { Headphones, CheckCircle2, MessageSquare, AudioLines, Loader2, Mic, Square, CheckCircle, RefreshCw, Send, X } from 'lucide-react';
 import { Campaign, AppView } from '../../../shared/types';
 import { AIAvatar } from '../../../components/voice/AIAvatar';
+import { usingRealApi } from '../../../shared/api';
 
 interface ContributorStudioPageProps {
   campaign: Campaign;
-  onFinish: (recDuration: string) => void;
+  onFinish: (recDuration: string, audio?: Blob, durationSeconds?: number) => void | Promise<void>;
   onToast: (msg: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
 }
 
@@ -21,6 +22,12 @@ export function ContributorStudioPage({ campaign, onFinish, onToast }: Contribut
   const [showHistorySidebar, setShowHistorySidebar] = useState(true);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioMimeTypeRef = useRef('audio/webm');
+  const turnStartedAtRef = useRef(0);
+  const totalRecordedSecondsRef = useRef(0);
 
   const aiDialogueLines = [
     "Tôi mua trong live vì thấy nói có quà tặng mini, giờ nhận hàng lại không có. Bên bạn làm ăn thế à, có phải lừa khách không?",
@@ -57,14 +64,46 @@ export function ContributorStudioPage({ campaign, onFinish, onToast }: Contribut
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  const handleStartRecording = () => {
-    setRecordingSeconds(0);
-    setIsRecording(true);
-    setAiState('Waiting');
-    onToast("Microphone connected. Recording environment active...", "info");
+  useEffect(() => () => {
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+  }, []);
+
+  const handleStartRecording = async () => {
+    if (!usingRealApi) {
+      setRecordingSeconds(0);
+      setIsRecording(true);
+      setAiState('Waiting');
+      onToast("Microphone connected. Recording environment active...", "info");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const preferredType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const recorder = new MediaRecorder(stream, { mimeType: preferredType });
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      audioMimeTypeRef.current = recorder.mimeType || 'audio/webm';
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
+      };
+      recorder.start(250);
+      turnStartedAtRef.current = Date.now();
+      setRecordingSeconds(0);
+      setIsRecording(true);
+      setAiState('Waiting');
+      onToast("Microphone connected. Recording environment active...", "info");
+    } catch {
+      onToast('Microphone permission is required to record this conversation.', 'error');
+    }
   };
 
   const handleStopRecording = () => {
+    if (usingRealApi && mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+    totalRecordedSecondsRef.current += Math.max(1, Math.round((Date.now() - turnStartedAtRef.current) / 1000));
     setIsRecording(false);
     setIsCheckingAudio(true);
     setAiState('Thinking');
@@ -180,7 +219,12 @@ export function ContributorStudioPage({ campaign, onFinish, onToast }: Contribut
 
           <button
             id="btn-finish-conversation"
-            onClick={() => onFinish("1m 15s")}
+            onClick={() => {
+              const audio = audioChunksRef.current.length
+                ? new Blob(audioChunksRef.current, { type: 'audio/webm' })
+                : undefined;
+              void onFinish(formatTimer(totalRecordedSecondsRef.current), audio, totalRecordedSecondsRef.current);
+            }}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-full shadow-lg transition-all cursor-pointer flex items-center gap-1 border border-emerald-500/40 hover:shadow-emerald-500/10 select-none font-sans"
           >
             <CheckCircle2 size={13} />

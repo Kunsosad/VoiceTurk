@@ -8,6 +8,7 @@ import { buyerFinanceQuerySchema, contributorFinanceQuerySchema, withdrawalSchem
 
 export const buyerFinanceRouter = Router();
 export const contributorFinanceRouter = Router();
+export const contributorWithdrawalRouter = Router();
 
 buyerFinanceRouter.get("/", asyncHandler(async (req, res) => {
   const { buyerId } = parseInput(buyerFinanceQuerySchema, req.query);
@@ -88,7 +89,7 @@ contributorFinanceRouter.get("/", asyncHandler(async (req, res) => {
   });
 }));
 
-contributorFinanceRouter.post("/withdraw", asyncHandler(async (req, res) => {
+contributorWithdrawalRouter.post("/", asyncHandler(async (req, res) => {
   const input = parseInput(withdrawalSchema, req.body);
   const contributor = await prisma.user.findUnique({ where: { id: input.contributorId } });
   if (!contributor || contributor.role !== "Contributor") throw new AppError(400, "INVALID_CONTRIBUTOR", "Contributor not found");

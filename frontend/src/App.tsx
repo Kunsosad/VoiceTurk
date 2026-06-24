@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { AppView, Campaign, Recording, Certificate, ContributorAgreement } from './shared/types';
 import { mockCampaigns as initialCampaigns, mockRecordings as initialRecordings, mockCertificates as initialCertificates, mockAgreements as initialAgreements } from './shared/mockData';
+import { appApi, usingRealApi } from './shared/api';
+import { realApi, StudioSession } from './shared/realApi';
 import { MessageSquare, ShieldAlert, Check, X, ShieldCheck, Lock, Mail, ArrowRight, User } from 'lucide-react';
 
 // Decoupled modular layouts & feature pages
@@ -30,11 +32,12 @@ export default function App() {
   const { user, isAuthenticated, isLoading } = useAuth();
   const [activeRole, setActiveRole] = useState<'buyer' | 'contributor'>('buyer');
   const [currentView, setCurrentView] = useState<AppView>('landing');
-  const [campaigns, setCampaigns] = useState<Campaign[]>(initialCampaigns);
-  const [recordings, setRecordings] = useState<Recording[]>(initialRecordings);
-  const [certificates, setCertificates] = useState<Certificate[]>(initialCertificates);
-  const [agreements, setAgreements] = useState<ContributorAgreement[]>(initialAgreements);
+  const [campaigns, setCampaigns] = useState<Campaign[]>(usingRealApi ? [] : initialCampaigns);
+  const [recordings, setRecordings] = useState<Recording[]>(usingRealApi ? [] : initialRecordings);
+  const [certificates, setCertificates] = useState<Certificate[]>(usingRealApi ? [] : initialCertificates);
+  const [agreements, setAgreements] = useState<ContributorAgreement[]>(usingRealApi ? [] : initialAgreements);
   const [customName, setCustomName] = useState('Vy Tran');
+  const [activeStudioSession, setActiveStudioSession] = useState<StudioSession | null>(null);
 
   // Simulated toast parameters
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -47,6 +50,34 @@ export default function App() {
       setToastMessage(null);
     }, 4000);
   };
+
+  const refreshWorkspace = React.useCallback(async () => {
+    const loadedCampaigns = await appApi.listCampaigns();
+    setCampaigns(loadedCampaigns);
+    const [loadedRecordings, loadedCertificates, loadedAgreements] = await Promise.all([
+      appApi.listRecordings(),
+      appApi.listCertificates(),
+      appApi.listAgreements(),
+    ]);
+    setRecordings(loadedRecordings);
+    setCertificates(loadedCertificates);
+    setAgreements(loadedAgreements);
+
+    if (usingRealApi && user) {
+      if (user.role === 'buyer') {
+        const finance = await realApi.getBuyerFinance(user.id);
+        setBuyerWalletBalance(finance.summary.remainingBudget);
+      } else {
+        const finance = await realApi.getContributorFinance(user.id);
+        setContributorBalance(finance.summary.approvedReward);
+      }
+    }
+  }, [user]);
+
+  React.useEffect(() => {
+    if (!isAuthenticated || !user) return;
+    void refreshWorkspace().catch((error: any) => showToast(error?.message || 'Unable to load VoiceTurk workspace', true));
+  }, [isAuthenticated, user, refreshWorkspace]);
 
   // Synchronize authenticated user profile with App core role states
   React.useEffect(() => {
@@ -145,12 +176,35 @@ export default function App() {
   const [draftCampaignData, setDraftCampaignData] = useState<any | null>(null);
   
   // State Dispatch: Handle Creating a campaign
-  const handleCreateCampaignFromAgent = (data: any) => {
+  const handleCreateCampaignFromAgent = async (data: any) => {
     const targetRecs = data.targetRecordings || 60;
     const pricePerRec = data.pricePerRecording || 8000;
     const payoutPool = targetRecs * pricePerRec;
     const platformFee = Math.round(payoutPool * 0.1);
     const grandTotal = payoutPool + platformFee;
+
+    try {
+      let created = await appApi.createCampaign({
+        name: data.name,
+        description: `Verified Vietnamese conversational support session in the sector of: ${data.industry || 'FMCG & Customer Support'}. AI Client profile: ${data.aiCustomerRole}.`,
+        context: data.context,
+        aiCustomerRole: data.aiCustomerRole,
+        contributorRole: data.contributorRole,
+        boundary: 'Maximum 5 turns per side.',
+        targetAcceptedRecordings: targetRecs,
+        pricePerRecording: pricePerRec,
+        chatHistory: data.chatHistory,
+      });
+      created = await appApi.fundCampaign(created.id, grandTotal);
+      created = await appApi.activateCampaign(created.id);
+      await refreshWorkspace();
+      setSelectedCampaign(created);
+      setCurrentView('buyer-campaign-review');
+      showToast('Campaign created, funded, and activated successfully!');
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to create campaign', true);
+    }
+    return;
 
     // Build the new active campaign structure directly from AI VoiceBot parameters
     const newCamp: Campaign = {
@@ -207,14 +261,43 @@ export default function App() {
     showToast("Campaign parameterized and launched successfully!");
   };
 
-  const handleUpdateCampaign = (updatedCamp: Campaign) => {
-    setCampaigns(prevCampaigns => prevCampaigns.map(c => c.id === updatedCamp.id ? updatedCamp : c));
-    setSelectedCampaign(updatedCamp);
-    showToast("Campaign parameterized and launched successfully!");
+  const handleUpdateCampaign = async (updatedCamp: Campaign) => {
+    try {
+      const saved = await appApi.updateCampaign(updatedCamp.id, updatedCamp);
+      setCampaigns(prevCampaigns => prevCampaigns.map(c => c.id === saved.id ? saved : c));
+      setSelectedCampaign(saved);
+      showToast('Campaign updated successfully!');
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to update campaign', true);
+    }
   };
 
-  const handleActivateCampaign = () => {
+  const handleActivateCampaign = async () => {
     if (!draftCampaignData) return;
+
+    try {
+      let created = await appApi.createCampaign({
+        name: draftCampaignData.name,
+        description: draftCampaignData.description,
+        context: draftCampaignData.context,
+        aiCustomerRole: draftCampaignData.aiCustomerRole,
+        contributorRole: draftCampaignData.contributorRole,
+        boundary: 'Maximum 5 turns per side.',
+        targetAcceptedRecordings: draftCampaignData.targetRecordings,
+        pricePerRecording: draftCampaignData.pricePerRecording,
+        chatHistory: draftCampaignData.chatHistory,
+      });
+      created = await appApi.fundCampaign(created.id, 528000);
+      created = await appApi.activateCampaign(created.id);
+      setDraftCampaignData(null);
+      await refreshWorkspace();
+      setSelectedCampaign(created);
+      setCurrentView('buyer-campaign-review');
+      showToast('Campaign activated successfully and dispatched to contributor queue!');
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to activate campaign', true);
+    }
+    return;
 
     // Build the new active campaign structure
     const newCamp: Campaign = {
@@ -274,8 +357,27 @@ export default function App() {
   };
 
   // State Dispatch: Handle Recording Studio submission
-  const handleFinishRecordingStudioSession = (duration: string) => {
+  const handleFinishRecordingStudioSession = async (duration: string, audio?: Blob, durationSeconds = 75) => {
     const activeCamp = campaigns.find(c => c.id === 'campaign-1') || campaigns[0];
+
+    try {
+      let submitted: Recording;
+      if (usingRealApi) {
+        if (!activeStudioSession || !audio) throw new Error('Studio session or recorded audio is unavailable');
+        submitted = await realApi.submitStudioRecording(activeCamp.id, activeStudioSession.sessionId, audio, durationSeconds);
+        await realApi.endStudioSession(activeStudioSession.sessionId);
+        setActiveStudioSession(null);
+      } else {
+        submitted = await appApi.submitRecording(activeCamp.id, duration, durationSeconds);
+      }
+      await refreshWorkspace();
+      setSelectedRecording(submitted);
+      setCurrentView('contributor-session-summary');
+      showToast('Recording transmitted successfully to the enterprise audit queue!');
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to submit recording', true);
+    }
+    return;
 
     // Build the dynamic Recording structure representing the contributor's effort
     const newRecording: Recording = {
@@ -343,8 +445,19 @@ export default function App() {
   };
 
   // State Dispatch: Handle Buyer review decision
-  const handleRecordingDecision = (recordingId: string, decision: 'Accepted' | 'Retake requested' | 'Rejected', reason?: string) => {
+  const handleRecordingDecision = async (recordingId: string, decision: 'Accepted' | 'Retake requested' | 'Rejected', reason?: string) => {
     const activeCamp = campaigns.find(c => c.id === 'campaign-1') || campaigns[0];
+
+    try {
+      const apiDecision = decision === 'Accepted' ? 'accept' : decision === 'Retake requested' ? 'request_retake' : 'reject';
+      const updated = await appApi.reviewRecording(recordingId, apiDecision, reason);
+      setRecordings(current => current.map(item => item.id === updated.id ? updated : item));
+      await refreshWorkspace();
+      showToast(`Audit decision submitted successfully: marked as "${decision}"`);
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to submit review', true);
+    }
+    return;
 
     // Adjust state lists
     const updatedRecordings = recordings.map((rec) => {
@@ -611,8 +724,15 @@ export default function App() {
           <CertificatesPage
             certificates={certificates}
             onSelectCertificate={(cert) => {
-              setSelectedCertificate(cert);
-              setCurrentView('buyer-certificate-detail');
+              if (usingRealApi) {
+                void realApi.getCertificate(cert.id).then((detail) => {
+                  setSelectedCertificate(detail);
+                  setCurrentView('buyer-certificate-detail');
+                }).catch((error: any) => showToast(error?.message || 'Unable to load certificate', true));
+              } else {
+                setSelectedCertificate(cert);
+                setCurrentView('buyer-certificate-detail');
+              }
             }}
             onNavigate={setCurrentView}
           />
@@ -642,7 +762,17 @@ export default function App() {
         {currentView === 'contributor-consent' && (
           <ContributorConsentPage
             campaign={targetCampaign}
-            onAccept={() => setCurrentView('contributor-studio')}
+            onAccept={() => {
+              void appApi.joinCampaignConsent(targetCampaign, 'Accepted in VoiceTurk contributor consent screen').then(async () => {
+                if (usingRealApi && user) {
+                  const session = await realApi.startStudioSession(targetCampaign.id, user.id);
+                  setActiveStudioSession(session);
+                  showToast(`Studio channel ${session.channelName} is ready. The AI Customer must join manually.`);
+                }
+                await refreshWorkspace();
+                setCurrentView('contributor-studio');
+              }).catch((error: any) => showToast(error?.message || 'Unable to accept campaign terms', true));
+            }}
             onCancel={() => setCurrentView('contributor-campaigns')}
           />
         )}
@@ -673,6 +803,7 @@ export default function App() {
             contributorBalance={contributorBalance}
             setContributorBalance={setContributorBalance}
             onToast={(msg, type) => showToast(msg, type === 'error')}
+            onWithdraw={(amount) => appApi.mockWithdrawContributor(amount)}
             onNavigate={setCurrentView}
           />
         )}

@@ -129,7 +129,7 @@ export const mockApi = {
       securedBudget: newSecuredBudget,
       totalBudget: newSecuredBudget,
       platformFee,
-      status: campaign.status === 'Draft' ? 'TermsPending' : campaign.status
+      status: campaign.status
     };
 
     campaigns[index] = updated;

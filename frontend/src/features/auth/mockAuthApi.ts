@@ -1,5 +1,6 @@
 import { AuthUser, LoginPayload, RegisterPayload } from './authTypes';
 import { safeStorage } from '../../shared/safeStorage';
+import { realAuthApi } from '../../shared/realApi';
 
 const DELAY_MS = 500;
 const STORAGE_KEY = 'voiceturk_demo_user';
@@ -15,7 +16,7 @@ function getInitials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-export const mockAuthApi = {
+const localMockAuthApi = {
   async login(payload: LoginPayload): Promise<AuthUser> {
     await sleep(DELAY_MS);
     
@@ -79,3 +80,5 @@ export const mockAuthApi = {
     }
   }
 };
+
+export const mockAuthApi = import.meta.env.VITE_USE_REAL_API === 'true' ? realAuthApi : localMockAuthApi;

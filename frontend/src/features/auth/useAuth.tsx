@@ -20,19 +20,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // Load user from safeStorage on initialization
+  // Load and validate the user through the selected auth adapter.
   useEffect(() => {
-    const savedUserStr = safeStorage.getItem('voiceturk_demo_user');
-    if (savedUserStr) {
-      try {
-        const savedUser = JSON.parse(savedUserStr) as AuthUser;
-        setUser(savedUser);
-      } catch (err) {
-        console.error('Failed to parse cached demo user', err);
-        safeStorage.removeItem('voiceturk_demo_user');
-      }
-    }
-    setIsLoading(false);
+    let active = true;
+    void mockAuthApi.getCurrentUser().then((currentUser) => {
+      if (active) setUser(currentUser);
+    }).catch(() => {
+      if (active) setUser(null);
+    }).finally(() => {
+      if (active) setIsLoading(false);
+    });
+    return () => { active = false; };
   }, []);
 
   const login = async (payload: LoginPayload): Promise<AuthUser> => {

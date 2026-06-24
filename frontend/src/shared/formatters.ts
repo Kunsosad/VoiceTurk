@@ -68,8 +68,8 @@ export function formatCampaignStatus(status: string): string {
   switch (status) {
     case 'Draft':
       return 'Bản nháp';
-    case 'TermsPending':
-      return 'Chờ lập quỹ';
+    case 'Reviewing':
+      return 'Đang đánh giá';
     case 'Active':
       return 'Đang hoạt động';
     case 'Completed':
