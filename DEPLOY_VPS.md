@@ -134,6 +134,7 @@ Noi dung:
 VITE_USE_REAL_API=true
 VITE_API_BASE_URL=https://api.domain-cua-ban.com
 VITE_GOOGLE_CLIENT_ID=google-oauth-web-client-id.apps.googleusercontent.com
+VITE_USE_WORKSPACE_API=false
 ```
 
 De nut "Continue with Google" hoat dong, tao OAuth Web Client trong Google Cloud va them authorized JavaScript origin:
@@ -287,6 +288,14 @@ systemctl reload nginx
 ```
 
 Neu vua them hoac sua `VITE_GOOGLE_CLIENT_ID`, phai build lai frontend tu thu muc goc `VoiceTurk` nhu tren. Khong build trong `frontend/` vi thu muc do khong co `package.json`.
+
+Tren Cloudflare Pages, neu chua deploy day du backend Express cho campaigns/recordings/certificates, giu:
+
+```env
+VITE_USE_WORKSPACE_API=false
+```
+
+Google login van dung route Pages Function `/api/auth/google-login`, con dashboard se dung local demo data de khong hien loi API khong ton tai.
 
 ## 15. Kiem tra Google login sau deploy
 

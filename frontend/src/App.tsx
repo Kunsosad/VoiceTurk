@@ -76,7 +76,12 @@ export default function App() {
 
   React.useEffect(() => {
     if (!isAuthenticated || !user) return;
-    void refreshWorkspace().catch((error: any) => showToast(error?.message || 'Unable to load VoiceTurk workspace', true));
+    void refreshWorkspace().catch((error: any) => {
+      const message = usingRealApi
+        ? `Failed to load workspace data: ${error?.message || 'workspace API is unavailable'}`
+        : error?.message || 'Unable to load VoiceTurk workspace';
+      showToast(message, true);
+    });
   }, [isAuthenticated, user, refreshWorkspace]);
 
   // Synchronize authenticated user profile with App core role states
