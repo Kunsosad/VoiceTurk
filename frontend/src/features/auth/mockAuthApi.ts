@@ -92,4 +92,4 @@ const localMockAuthApi = {
   }
 };
 
-export const mockAuthApi = import.meta.env.VITE_USE_REAL_API === 'true' ? realAuthApi : localMockAuthApi;
+export const mockAuthApi = localMockAuthApi;

@@ -77,6 +77,13 @@ export default function App() {
   React.useEffect(() => {
     if (!isAuthenticated || !user) return;
     void refreshWorkspace().catch((error: any) => {
+      if (!usingRealApi) {
+        setCampaigns(initialCampaigns);
+        setRecordings(initialRecordings);
+        setCertificates(initialCertificates);
+        setAgreements(initialAgreements);
+        return;
+      }
       const message = usingRealApi
         ? `Failed to load workspace data: ${error?.message || 'workspace API is unavailable'}`
         : error?.message || 'Unable to load VoiceTurk workspace';
