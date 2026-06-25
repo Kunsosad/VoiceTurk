@@ -1,7 +1,14 @@
 import { safeStorage } from './safeStorage';
 
 const TOKEN_KEY = 'voiceturk_api_token';
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const defaultApiBaseUrl = () => {
+  if (typeof window === 'undefined') return '';
+  const { hostname, protocol } = window.location;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:4000';
+  return `${protocol}//api.${hostname.replace(/^www\./, '')}`;
+};
+const API_BASE_URL = configuredApiBaseUrl || defaultApiBaseUrl();
 
 type ApiSuccess<T> = { ok: true; data: T };
 type ApiFailure = { ok: false; error: { code: string; message: string; details?: unknown } };

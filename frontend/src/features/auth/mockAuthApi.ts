@@ -72,7 +72,7 @@ const localMockAuthApi = {
   async googleLogin(accessToken: string, role: UserRole): Promise<AuthUser> {
     await sleep(DELAY_MS);
     if (!accessToken) throw new Error('Google Sign-In did not return an access token');
-    throw new Error('Google Sign-In requires VITE_USE_REAL_API=true and a running backend.');
+    return realAuthApi.googleLogin(accessToken, role);
   },
 
   async getCurrentUser(): Promise<AuthUser | null> {
