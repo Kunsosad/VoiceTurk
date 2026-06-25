@@ -1,6 +1,6 @@
 import type { AuthUser, LoginPayload, RegisterPayload, UserRole } from '../features/auth/authTypes';
 import type { Campaign, Certificate, ContributorAgreement, Recording, ReviewDecision } from './types';
-import { apiAssetUrl, apiRequest, apiToken } from './apiClient';
+import { ApiError, apiAssetUrl, apiRequest, apiToken } from './apiClient';
 import { safeStorage } from './safeStorage';
 
 type BackendCampaign = { id: string; buyerId: string; name: string; description: string; context: string; aiCustomerRole: string; contributorRole: string; conversationBoundary: string; maxTurnsPerSide: number; targetAcceptedRecordings: number; rewardPerAcceptedRecording: number; budgetSecured: number; platformFee: number; status: Campaign['status']; pendingReviewCount: number; acceptedCount: number; retakeRequestedCount: number; rejectedCount: number; payoutAccrued: number; createdAt: string; updatedAt: string };
@@ -143,7 +143,19 @@ export const realAuthApi = {
     apiToken.set(result.token); const user = toAuthUser(result.user); safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(user)); return user;
   },
   async googleLogin(accessToken: string, role: UserRole): Promise<AuthUser> {
-    const result = await apiRequest<BackendLogin>('/api/auth/google-login', { method: 'POST', body: { accessToken, role: toBackendRole(role) } });
+    const response = await fetch('/api/auth/google-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken, role: toBackendRole(role) }),
+    });
+    const payload = await response.json() as { ok: true; data: BackendLogin } | { ok: false; error: { code: string; message: string; details?: unknown } };
+    if ('error' in payload) {
+      throw new ApiError(payload.error.code, payload.error.message, response.status, payload.error.details);
+    }
+    if (!response.ok) {
+      throw new ApiError('HTTP_ERROR', 'Google login request failed', response.status);
+    }
+    const result = payload.data;
     apiToken.set(result.token); const user = toAuthUser(result.user); safeStorage.setItem(AUTH_USER_KEY, JSON.stringify(user)); return user;
   },
   async logout(): Promise<void> { apiToken.clear(); safeStorage.removeItem(AUTH_USER_KEY); },
