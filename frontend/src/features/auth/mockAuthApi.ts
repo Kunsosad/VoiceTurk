@@ -72,16 +72,7 @@ const localMockAuthApi = {
   async googleLogin(accessToken: string, role: UserRole): Promise<AuthUser> {
     await sleep(DELAY_MS);
     if (!accessToken) throw new Error('Google Sign-In did not return an access token');
-    const mockUser: AuthUser = {
-      id: `usr-${Math.random().toString(36).substr(2, 9)}`,
-      fullName: role === 'buyer' ? 'Vy Tran (Google)' : 'Minh Pham (Google)',
-      email: role === 'buyer' ? 'buyer.google@gmail.com' : 'contributor.google@gmail.com',
-      role,
-      avatarInitials: role === 'buyer' ? 'VT' : 'MP',
-      createdAt: new Date().toISOString(),
-    };
-    safeStorage.setItem(STORAGE_KEY, JSON.stringify(mockUser));
-    return mockUser;
+    throw new Error('Google Sign-In requires VITE_USE_REAL_API=true and a running backend.');
   },
 
   async getCurrentUser(): Promise<AuthUser | null> {
@@ -89,7 +80,12 @@ const localMockAuthApi = {
     const data = safeStorage.getItem(STORAGE_KEY);
     if (!data) return null;
     try {
-      return JSON.parse(data) as AuthUser;
+      const user = JSON.parse(data) as AuthUser;
+      if (user.email === 'buyer.google@gmail.com' || user.email === 'contributor.google@gmail.com') {
+        safeStorage.removeItem(STORAGE_KEY);
+        return null;
+      }
+      return user;
     } catch {
       return null;
     }
